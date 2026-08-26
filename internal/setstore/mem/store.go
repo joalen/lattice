@@ -1,6 +1,7 @@
 package mem
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/joalen/lattice/internal/ports"
@@ -47,4 +48,45 @@ func (s *Store) Cardinality(setKey string) (int, error) {
 	defer s.mu.Unlock()
 
 	return len(s.sets[setKey]), nil
+}
+
+// Intersect derives common setKey within setKeys (essentially intersection from set theory)
+func (s *Store) Intersect(setKeys ...string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(setKeys) == 0 {
+		return nil, fmt.Errorf("intersect: no set keys given")
+	}
+
+	result := s.copySet(setKeys[0])
+	for _, key := range setKeys[1:] {
+		for member := range result {
+			if _, ok := s.sets[key][member]; !ok {
+				delete(result, member) // not in set therefore drop from running intersection
+			}
+		}
+	}
+
+	return keys(result), nil
+}
+
+func (s *Store) copySet(setKey string) map[string]struct{} {
+	out := make(map[string]struct{})
+
+	for member := range s.sets[setKey] {
+		out[member] = struct{}{}
+	}
+
+	return out
+}
+
+func keys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+
+	for k := range m {
+		out = append(out, k)
+	}
+
+	return out
 }
