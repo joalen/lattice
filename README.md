@@ -55,7 +55,14 @@ Most JSON schema inference tooling (jsoninf, ClickHouse's inference, the various
 }
 ```
 
-Why this might break is because the keys are heterogeneous, where you have "2026" a year, "Q1" a quarter, "Jan" a month, and etc, to which you can't clearly generate a proper schema for. The academic literature on this (see [Related work](#related-work)) treats heterogeneous JSON schema discovery as closer to inferring a **tree regular grammar** than a flat relational schema — which is the right framing, and the one this project's ingestion engine is built around.
+Why this might break is because the keys are heterogeneous, where you have "2026" a year, "Q1" a quarter, "Jan" a month, and etc, to which you can't clearly generate a proper schema for. The academic literature on this (see [Related work](#related-work)) treats heterogeneous JSON schema discovery as closer to inferring a **tree regular grammar** than a flat relational schema, which is the right framing here, and the one this project's ingestion engine is built around.
+
+## Related Works
+`ingest.Signature`'s core choice: fingerprint by shape, discard key names wasn't arrived at blind. It's a direct response to specific, named limitations in the existing JSON schema inference literature:
+- **Baazizi, Mohamed-Amine, et al., "Schema Inference for Massive JSON Datasets" (*Extending Database Technology (EDBT)* 2017), extended as "Parametric Schema Inference for Massive JSON Datasets" (VLDB Journal, 2019).** A distributed, MapReduce/Spark-based approach that infers a schema per exact field path across a corpus, with a dedicated type language for expressing unions and optional fields. This is the representative "path-based" strategy that most schema inference tooling follows. It scales well and handles union/optional types cleanly, but a path is only meaningful if the same key shows up at the same position across documents. That assumption is exactly what the above schema example violates by design.
+- **Klettke, Störl & Scherzinger, "Schema Extraction and Structural Outlier Detection for JSON-based NoSQL Data Stores" (DBIS 2015).** Introduced a structure identification graph for hierarchical JSON relationships and framed irregular documents as *structural outliers* to be detected against an inferred baseline, rather than noise to be normalized away. That reframing, "which structures recur, and which are rare/anomalous", is closer to how `ingest.Discover`'s frequency tally is meant to be read than a traditional required/optional schema is.
+- **Cánovas Izquierdo & Cabot, "Discovering Implicit Schemas in JSON Data" (ICWE 2013).** Proposed an iterative schema-merging technique: infer a schema from one document, then progressively fold in schemas from subsequent documents, refining unions and optionality incrementally rather than requiring a full-corpus pass upfront. That incremental-merge idea is what I had in mind for a goal on creating an idempotent re-ingestion system (diff and update indexes as source files change, rather than a full flush) is aiming for. Rather than full path-based schemas, we just apply to structural signatures.
+- **Veinhardt Latták & Koupil, "A Comparative Analysis of JSON Schema Inference Algorithms" (ENASE 2022).** An independent, author-unaffiliated comparison of five approaches (including the three above, plus Sevilla et al. 2015 and Frozza et al. 2018), evaluated on both feature support and measured runtime across corpora from 1k to 128k documents. Its most load-bearing finding for this project: as of that survey, none of the five studied approaches can correctly infer **maps/dictionaries** as a distinct type, because a map's key is part of the actual *data*, not schema metadata, and every approach studied treats keys as structural information. That's an explicit, citable statement of exactly the problem this project's original dataset ran into: a requirement tree where section titles live in key position *are* the data, not the schema, which breaks every path-based approach in the survey by design rather than by implementation gap.
 
 
 ---
@@ -63,13 +70,13 @@ Why this might break is because the keys are heterogeneous, where you have "2026
 ## Architecture: hexagonal (ports & adapters)
 
 The core rule: **business logic doesn't know Redis exists.** Domain types and query/ingestion logic depend only on small interfaces ("ports"); Redis, HTTP, and anything else are pluggable "adapters" that implement those interfaces. This buys us two concrete things:
-- **Testability** — an in-memory fake adapter lets the domain logic be developed and tested with zero real Redis running.
-- **Swappability** — the storage backend can change (Redis → Valkey, or even a different tool entirely) without touching `search`, `facets`, `similarity`, or `ingest`. (Valkey (another in memory database) specifically is a wire-compatible fork of Redis 7.2.4; same RESP protocol, same command set, so that swap would need almost no code change at all. Now, if we considered an in-memory store without native set operations, like Memcached, yeah it can technically satisfy the same Go interface but would be a poor fit in practice as the interface guarantees pluggability, not that the backend is well-suited to the job.)
+- **Testability**: an in-memory fake adapter lets the domain logic be developed and tested with zero real Redis running.
+- **Swappability**: the storage backend can change (Redis → Valkey, or even a different tool entirely) without touching `search`, `facets`, `similarity`, or `ingest`. (Valkey (another in memory database) specifically is a wire-compatible fork of Redis 7.2.4; same RESP protocol, same command set, so that swap would need almost no code change at all. Now, if we considered an in-memory store without native set operations, like Memcached, yeah it can technically satisfy the same Go interface but would be a poor fit in practice as the interface guarantees pluggability, not that the backend is well-suited to the job.)
 
 ```sh
 lattice/
 ├── go.mod
-├── main.go                  # composition root — wires adapters into the domain
+├── main.go                  # composition root: wires adapters into the domain
 ├── internal/
 │   ├── domain/              # core types (Document, etc). Zero deps on Redis/HTTP.
 │   ├── ports/               # interfaces the domain needs (SetStore, ...)
@@ -90,8 +97,8 @@ lattice/
 ### Testing philosophy
 
 Everything above has been exercised against **public datasets unrelated to the original degree-plan use case**, on purpose:
-- [JSONPlaceholder](https://jsonplaceholder.typicode.com)'s `/users` endpoint — confirmed `Discover` finds the repeating user/address/geo shape with no hints.
-- The [Go release manifest](https://go.dev/dl/?mode=json) (`go.dev/dl`) — confirmed two-tier structural discovery (files nested inside releases) on real, stable-schema data, and used to exercise the `mem.Store` adapter end-to-end (filtering release files by OS/arch/kind).
+- [JSONPlaceholder](https://jsonplaceholder.typicode.com)'s `/users` endpoint: [confirmed] `Discover` finds the repeating user/address/geo shape with no hints.
+- The [Go release manifest](https://go.dev/dl/?mode=json) (`go.dev/dl`): [confirmed] two-tier structural discovery (files nested inside releases) on real, stable-schema data, and used to exercise the `mem.Store` adapter end-to-end (filtering release files by OS/arch/kind).
 
 This is deliberate: if "domain-agnostic ingestion" only actually works on data shaped like say degree plans or another similar dataset, it isn't actually domain-agnostic. Testing against unrelated public data is what makes my claim checkable rather than just asserted.
 
