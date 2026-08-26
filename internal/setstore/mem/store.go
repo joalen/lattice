@@ -85,6 +85,25 @@ func (s *Store) Union(setKeys ...string) ([]string, error) {
 	return keys(result), nil
 }
 
+// Difference does an intersect between two setKeys with one setKey becoming the complement (essentially difference from set theory)
+func (s *Store) Difference(setKeys ...string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(setKeys) == 0 {
+		return nil, fmt.Errorf("difference: no set keys given")
+	}
+
+	result := s.copySet(setKeys[0])
+	for _, key := range setKeys[1:] {
+		for member := range s.sets[key] {
+			delete(result, member) // present in the "subtract" set? vanish
+		}
+	}
+
+	return keys(result), nil
+}
+
 func (s *Store) copySet(setKey string) map[string]struct{} {
 	out := make(map[string]struct{})
 
