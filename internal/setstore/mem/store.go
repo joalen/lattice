@@ -71,6 +71,20 @@ func (s *Store) Intersect(setKeys ...string) ([]string, error) {
 	return keys(result), nil
 }
 
+// Union aggregates setKeys within setKeys (essentially union from set theory)
+func (s *Store) Union(setKeys ...string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make(map[string]struct{})
+	for _, key := range setKeys {
+		for member := range s.sets[key] {
+			result[member] = struct{}{}
+		}
+	}
+	return keys(result), nil
+}
+
 func (s *Store) copySet(setKey string) map[string]struct{} {
 	out := make(map[string]struct{})
 
