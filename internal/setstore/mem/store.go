@@ -40,3 +40,11 @@ func (s *Store) AddToSet(setKey string, members ...string) error {
 
 	return nil
 }
+
+// Cardinality returns the count of all distinct elements in a setKey (from set theory)
+func (s *Store) Cardinality(setKey string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.sets[setKey]), nil
+}
