@@ -15,6 +15,7 @@ type FacetMatch struct {
 	Values []string
 }
 
+// Find returns result via set theory operations
 func Find(store ports.SetStore, q Query) ([]string, error) {
 	if len(q.Facets) == 0 {
 		return nil, fmt.Errorf("search: query must have at least once facet")
