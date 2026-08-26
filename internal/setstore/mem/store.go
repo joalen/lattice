@@ -104,6 +104,26 @@ func (s *Store) Difference(setKeys ...string) ([]string, error) {
 	return keys(result), nil
 }
 
+func (s *Store) PutDocument(entity, id string, raw []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.docs[entity+":"+id] = raw
+	return nil
+}
+
+func (s *Store) GetDocument(entity, id string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	raw, ok := s.docs[entity+":"+id]
+	if !ok {
+		return nil, fmt.Errorf("document not found: %s:%s", entity, id)
+	}
+
+	return raw, nil
+}
+
 func (s *Store) copySet(setKey string) map[string]struct{} {
 	out := make(map[string]struct{})
 
