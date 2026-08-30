@@ -115,3 +115,46 @@ func kindOf(v any) string {
 		return "unknown"
 	}
 }
+
+// symmetricDifference counts how many individual field-slots differ
+// between two shape multisets (i.e. how many fields would need to be
+// added or removed to turn one shape into the other.)
+func symmetricDifference(a, b map[string]int) int {
+	allKinds := make(map[string]struct{})
+	for k := range a {
+		allKinds[k] = struct{}{}
+	}
+	for k := range b {
+		allKinds[k] = struct{}{}
+	}
+
+	diff := 0
+	for kind := range allKinds {
+		d := a[kind] - b[kind]
+		if d < 0 {
+			d = -d
+		}
+		diff += d
+	}
+	return diff
+}
+
+// MaxAbsoluteDifference: shapes differing by at most this many field-slots
+// merge regardless of ratio-based similarity. Exists specifically to rescue
+// small objects, where losing one optional field tanks the Jaccard ratio
+// (2 fields -> 1 field = 0.5, well under SimilarityThreshold) even though
+// "one field missing" is the exact same real-world change it is on a
+// large object, where it barely moves the ratio at all.
+const MaxAbsoluteDifference = 1
+
+// ShouldMerge decides whether two shapes represent the same recurring
+// type. Two independent criteria, either one sufficient: a ratio check
+// (correct for large objects, where percentage-based similarity is
+// meaningful) OR an absolute-difference check (correct for small objects,
+// where ratio alone unfairly punishes a single missing field).
+func ShouldMerge(a, b map[string]int) bool {
+	if ShapeSimilarity(a, b) >= SimilarityThreshold {
+		return true
+	}
+	return symmetricDifference(a, b) <= MaxAbsoluteDifference
+}

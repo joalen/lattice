@@ -51,7 +51,7 @@ func (idx *ShapeIndex) Classify(node any) string {
 func (idx *ShapeIndex) assign(clusters *[]cluster, prefix string, shape map[string]int) string {
 	for i := range *clusters {
 		c := &(*clusters)[i]
-		if ShapeSimilarity(c.shape, shape) >= SimilarityThreshold {
+		if ShouldMerge(c.shape, shape) {
 			c.count++
 			return c.id
 		}
