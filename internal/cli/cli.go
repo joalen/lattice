@@ -306,35 +306,42 @@ func (a *app) search(ctx context.Context, args []string) error {
 		return usageError("--limit and --offset must not be negative")
 	}
 
-	q := search.Query{Entity: *entity, Limit: *limit, Offset: *offset}
+	req := wire.SearchRequest{
+		Entity:      *entity,
+		Limit:       *limit,
+		Offset:      *offset,
+		CountFacets: splitList(*facetPaths),
+		Fields:      splitList(*fields),
+	}
 	for _, s := range facetFlags {
 		f, err := parseFacet(s)
 		if err != nil {
 			return err
 		}
-		q.Facets = append(q.Facets, f)
+		req.Facets = append(req.Facets, f)
 	}
 	for _, s := range notFlags {
 		f, err := parseFacet(s)
 		if err != nil {
 			return err
 		}
-		q.Not = append(q.Not, f)
+		req.Not = append(req.Not, f)
 	}
 	for _, s := range rangeFlags {
 		r, err := parseRange(s)
 		if err != nil {
 			return err
 		}
-		q.Ranges = append(q.Ranges, r)
+		req.Ranges = append(req.Ranges, r)
 	}
 	if *sortSpec != "" {
 		srt, err := parseSort(*sortSpec)
 		if err != nil {
 			return err
 		}
-		q.Sort = srt
+		req.Sort = srt
 	}
+	q := searchQuery(req)
 
 	store, done, err := a.connect(c)
 	if err != nil {
@@ -346,13 +353,12 @@ func (a *app) search(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	facetList := splitList(*facetPaths)
 	for _, f := range append(slices.Clone(q.Facets), q.Not...) {
 		if err := checkField(m, f.Path, ingest.IndexSet); err != nil {
 			return err
 		}
 	}
-	for _, p := range facetList {
+	for _, p := range req.CountFacets {
 		if err := checkField(m, p, ingest.IndexSet); err != nil {
 			return err
 		}
@@ -378,16 +384,15 @@ func (a *app) search(ctx context.Context, args []string) error {
 	}
 
 	out := wire.SearchResponse{Total: page.Total, Offset: q.Offset, Results: make([]wire.SearchHit, 0, len(page.IDs))}
-	summaryFields := splitList(*fields)
 	for _, id := range page.IDs {
-		sum, err := summarize(ctx, store, q.Entity, id, summaryFields)
+		sum, err := summarize(ctx, store, q.Entity, id, req.Fields)
 		if err != nil {
 			return err
 		}
 		out.Results = append(out.Results, wire.SearchHit{ID: id, Summary: sum})
 	}
-	if len(facetList) > 0 {
-		counts, err := facets.Counts(ctx, store, q.Entity, facetList, ids)
+	if len(req.CountFacets) > 0 {
+		counts, err := facets.Counts(ctx, store, q.Entity, req.CountFacets, ids)
 		if err != nil {
 			return err
 		}
@@ -410,7 +415,7 @@ func (a *app) get(ctx context.Context, args []string) error {
 	if fs.NArg() != 1 {
 		return usageError("exactly one ID is required")
 	}
-	id := fs.Arg(0)
+	req := wire.GetRequest{Entity: *entity, ID: fs.Arg(0)}
 
 	store, done, err := a.connect(c)
 	if err != nil {
@@ -418,9 +423,9 @@ func (a *app) get(ctx context.Context, args []string) error {
 	}
 	defer done()
 
-	raw, err := store.GetDocument(ctx, *entity, id)
+	raw, err := store.GetDocument(ctx, req.Entity, req.ID)
 	if errors.Is(err, ports.ErrNotFound) {
-		return fmt.Errorf("no document %q in entity %q", id, *entity)
+		return fmt.Errorf("no document %q in entity %q", req.ID, req.Entity)
 	}
 	if err != nil {
 		return err
@@ -450,7 +455,13 @@ func (a *app) similar(ctx context.Context, args []string) error {
 	if *limit < 0 {
 		return usageError("--limit must not be negative")
 	}
-	id := fs.Arg(0)
+	req := wire.SimilarRequest{
+		Entity: *entity,
+		ID:     fs.Arg(0),
+		Paths:  splitList(*paths),
+		Limit:  *limit,
+		Fields: splitList(*fields),
+	}
 
 	store, done, err := a.connect(c)
 	if err != nil {
@@ -458,35 +469,50 @@ func (a *app) similar(ctx context.Context, args []string) error {
 	}
 	defer done()
 
-	m, err := a.mapping(ctx, store, *entity)
+	m, err := a.mapping(ctx, store, req.Entity)
 	if err != nil {
 		return err
 	}
-	pathList := splitList(*paths)
-	for _, p := range pathList {
+	for _, p := range req.Paths {
 		if err := checkField(m, p, ingest.IndexSet); err != nil {
 			return err
 		}
 	}
 
-	matches, err := similarity.Similar(ctx, store, *entity, id, similarity.Options{Paths: pathList, Limit: *limit})
+	matches, err := similarity.Similar(ctx, store, req.Entity, req.ID, similarity.Options{Paths: req.Paths, Limit: req.Limit})
 	if errors.Is(err, ports.ErrNotFound) {
-		return fmt.Errorf("no document %q in entity %q", id, *entity)
+		return fmt.Errorf("no document %q in entity %q", req.ID, req.Entity)
 	}
 	if err != nil {
 		return err
 	}
 
-	summaryFields := splitList(*fields)
-	out := wire.SimilarResponse{ID: id, Matches: make([]wire.SimilarMatch, 0, len(matches))}
+	out := wire.SimilarResponse{ID: req.ID, Matches: make([]wire.SimilarMatch, 0, len(matches))}
 	for _, m := range matches {
-		sum, err := summarize(ctx, store, *entity, m.ID, summaryFields)
+		sum, err := summarize(ctx, store, req.Entity, m.ID, req.Fields)
 		if err != nil {
 			return err
 		}
 		out.Matches = append(out.Matches, wire.SimilarMatch{ID: m.ID, Score: m.Score, Shared: m.Shared, Summary: sum})
 	}
 	return a.emit(out, *compact)
+}
+
+func searchQuery(r wire.SearchRequest) search.Query {
+	q := search.Query{Entity: r.Entity, Limit: r.Limit, Offset: r.Offset}
+	for _, f := range r.Facets {
+		q.Facets = append(q.Facets, search.Facet{Path: f.Path, Values: f.Values})
+	}
+	for _, f := range r.Not {
+		q.Not = append(q.Not, search.Facet{Path: f.Path, Values: f.Values})
+	}
+	for _, rg := range r.Ranges {
+		q.Ranges = append(q.Ranges, search.Range{Path: rg.Path, Min: rg.Min, Max: rg.Max})
+	}
+	if r.Sort != nil {
+		q.Sort = &search.Sort{Path: r.Sort.Path, Desc: r.Sort.Desc}
+	}
+	return q
 }
 
 func ingestReport(r ingest.Report) wire.IngestReport {
@@ -625,26 +651,26 @@ func splitList(s string) []string {
 	return out
 }
 
-func parseFacet(s string) (search.Facet, error) {
+func parseFacet(s string) (wire.FacetFilter, error) {
 	path, rest, ok := strings.Cut(s, "=")
 	path = strings.TrimSpace(path)
 	values := splitList(rest)
 	if !ok || path == "" || len(values) == 0 {
-		return search.Facet{}, usageError(fmt.Sprintf("bad facet %q: want path=value[,value...]", s))
+		return wire.FacetFilter{}, usageError(fmt.Sprintf("bad facet %q: want path=value[,value...]", s))
 	}
-	return search.Facet{Path: path, Values: values}, nil
+	return wire.FacetFilter{Path: path, Values: values}, nil
 }
 
-func parseRange(s string) (search.Range, error) {
+func parseRange(s string) (wire.RangeFilter, error) {
 	bad := usageError(fmt.Sprintf("bad range %q: want path=lo..hi with at least one bound", s))
 	path, rest, ok := strings.Cut(s, "=")
 	lo, hi, dots := strings.Cut(rest, "..")
 	path = strings.TrimSpace(path)
 	if !ok || !dots || path == "" {
-		return search.Range{}, bad
+		return wire.RangeFilter{}, bad
 	}
 
-	r := search.Range{Path: path}
+	r := wire.RangeFilter{Path: path}
 	for _, b := range []struct {
 		text string
 		dst  **float64
@@ -654,24 +680,24 @@ func parseRange(s string) (search.Range, error) {
 		}
 		v, err := strconv.ParseFloat(b.text, 64)
 		if err != nil || math.IsNaN(v) {
-			return search.Range{}, bad
+			return wire.RangeFilter{}, bad
 		}
 		*b.dst = &v
 	}
 	switch {
 	case r.Min == nil && r.Max == nil:
-		return search.Range{}, bad
+		return wire.RangeFilter{}, bad
 	case r.Min != nil && r.Max != nil && *r.Min > *r.Max:
-		return search.Range{}, usageError(fmt.Sprintf("bad range %q: lower bound is above upper bound", s))
+		return wire.RangeFilter{}, usageError(fmt.Sprintf("bad range %q: lower bound is above upper bound", s))
 	}
 	return r, nil
 }
 
-func parseSort(s string) (*search.Sort, error) {
+func parseSort(s string) (*wire.SortSpec, error) {
 	path, dir, _ := strings.Cut(s, ":")
 	path = strings.TrimSpace(path)
 	if path == "" || (dir != "" && dir != "asc" && dir != "desc") {
 		return nil, usageError(fmt.Sprintf("bad sort %q: want path or path:desc", s))
 	}
-	return &search.Sort{Path: path, Desc: dir == "desc"}, nil
+	return &wire.SortSpec{Path: path, Desc: dir == "desc"}, nil
 }
