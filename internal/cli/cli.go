@@ -20,6 +20,7 @@ import (
 	"github.com/joalen/lattice/internal/ports"
 	"github.com/joalen/lattice/internal/search"
 	"github.com/joalen/lattice/internal/similarity"
+	"github.com/joalen/lattice/internal/wire"
 )
 
 const maxSummaryRunes = 120
@@ -182,13 +183,9 @@ func (a *app) discover(_ context.Context, args []string) error {
 		return err
 	}
 
-	type entry struct {
-		Signature string `json:"signature"`
-		Count     int    `json:"count"`
-	}
-	entries := make([]entry, 0, len(freq))
+	entries := make([]wire.DiscoverEntry, 0, len(freq))
 	for sig, n := range freq {
-		entries = append(entries, entry{sig, n})
+		entries = append(entries, wire.DiscoverEntry{Signature: sig, Count: n})
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Count != entries[j].Count {
@@ -278,19 +275,7 @@ func (a *app) ingest(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	return a.emit(rep, *compact)
-}
-
-type resultItem struct {
-	ID      string         `json:"id"`
-	Summary map[string]any `json:"summary"`
-}
-
-type searchOutput struct {
-	Total   int                       `json:"total"`
-	Offset  int                       `json:"offset"`
-	Results []resultItem              `json:"results"`
-	Facets  map[string][]facets.Count `json:"facets,omitempty"`
+	return a.emit(ingestReport(rep), *compact)
 }
 
 func (a *app) search(ctx context.Context, args []string) error {
@@ -392,20 +377,21 @@ func (a *app) search(ctx context.Context, args []string) error {
 		return err
 	}
 
-	out := searchOutput{Total: page.Total, Offset: q.Offset, Results: make([]resultItem, 0, len(page.IDs))}
+	out := wire.SearchResponse{Total: page.Total, Offset: q.Offset, Results: make([]wire.SearchHit, 0, len(page.IDs))}
 	summaryFields := splitList(*fields)
 	for _, id := range page.IDs {
 		sum, err := summarize(ctx, store, q.Entity, id, summaryFields)
 		if err != nil {
 			return err
 		}
-		out.Results = append(out.Results, resultItem{ID: id, Summary: sum})
+		out.Results = append(out.Results, wire.SearchHit{ID: id, Summary: sum})
 	}
 	if len(facetList) > 0 {
-		out.Facets, err = facets.Counts(ctx, store, q.Entity, facetList, ids)
+		counts, err := facets.Counts(ctx, store, q.Entity, facetList, ids)
 		if err != nil {
 			return err
 		}
+		out.Facets = facetCounts(counts)
 	}
 	return a.emit(out, *compact)
 }
@@ -441,13 +427,6 @@ func (a *app) get(ctx context.Context, args []string) error {
 	}
 	_, err = fmt.Fprintf(a.out, "%s\n", raw)
 	return err
-}
-
-type similarItem struct {
-	ID      string         `json:"id"`
-	Score   float64        `json:"score"`
-	Shared  int            `json:"shared"`
-	Summary map[string]any `json:"summary"`
 }
 
 func (a *app) similar(ctx context.Context, args []string) error {
@@ -499,18 +478,39 @@ func (a *app) similar(ctx context.Context, args []string) error {
 	}
 
 	summaryFields := splitList(*fields)
-	items := make([]similarItem, 0, len(matches))
+	out := wire.SimilarResponse{ID: id, Matches: make([]wire.SimilarMatch, 0, len(matches))}
 	for _, m := range matches {
 		sum, err := summarize(ctx, store, *entity, m.ID, summaryFields)
 		if err != nil {
 			return err
 		}
-		items = append(items, similarItem{ID: m.ID, Score: m.Score, Shared: m.Shared, Summary: sum})
+		out.Matches = append(out.Matches, wire.SimilarMatch{ID: m.ID, Score: m.Score, Shared: m.Shared, Summary: sum})
 	}
-	return a.emit(struct {
-		ID      string        `json:"id"`
-		Matches []similarItem `json:"matches"`
-	}{id, items}, *compact)
+	return a.emit(out, *compact)
+}
+
+func ingestReport(r ingest.Report) wire.IngestReport {
+	return wire.IngestReport{
+		Docs:        r.Docs,
+		Created:     r.Created,
+		Updated:     r.Updated,
+		Unchanged:   r.Unchanged,
+		Pruned:      r.Pruned,
+		KeysAdded:   r.KeysAdded,
+		KeysRemoved: r.KeysRemoved,
+	}
+}
+
+func facetCounts(in map[string][]facets.Count) map[string][]wire.FacetCount {
+	out := make(map[string][]wire.FacetCount, len(in))
+	for path, counts := range in {
+		converted := make([]wire.FacetCount, len(counts))
+		for i, c := range counts {
+			converted[i] = wire.FacetCount{Value: c.Value, Count: c.N}
+		}
+		out[path] = converted
+	}
+	return out
 }
 
 func summarize(ctx context.Context, store ports.SetStore, entity, id string, fields []string) (map[string]any, error) {
