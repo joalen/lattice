@@ -6,33 +6,28 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/joalen/lattice/internal/keyspace"
 	"github.com/joalen/lattice/internal/ports"
 )
 
-// Options controls one ingestion run.
 type Options struct {
-	// Prune removes documents that are in the index but absent from this run.
+	// Prune removes indexed documents missing from this run; leave off for partial ingests.
 	Prune bool
 }
 
-// Report summarizes what a run changed.
 type Report struct {
-	Docs        int // documents read
-	Created     int // not previously indexed
-	Updated     int // indexed before, content or memberships changed
-	Unchanged   int // nothing to do
-	Pruned      int // removed because they disappeared from the source
-	KeysAdded   int // facet memberships added
-	KeysRemoved int // facet memberships removed
-
-	// Deferred lists paths mapped as "range" that were seen but not indexed!
-	Deferred []string
+	Docs        int
+	Created     int
+	Updated     int
+	Unchanged   int
+	Pruned      int
+	KeysAdded   int
+	KeysRemoved int
 }
 
-// Builder turns documents into index entries in any ports.SetStore.
 type Builder struct {
 	store      ports.SetStore
 	m          Mapping
@@ -59,13 +54,15 @@ func NewBuilder(store ports.SetStore, m Mapping) (*Builder, error) {
 }
 
 type prepared struct {
-	id   string
-	raw  []byte
-	keys []string // sorted facet keys including the universe
+	id     string
+	raw    []byte
+	keys   []string
+	scores map[string]float64
 }
 
+// Ingest validates every document before writing any, then writes each as an atomic batch.
 func (b *Builder) Ingest(docs []json.RawMessage, opts Options) (Report, error) {
-	rep := Report{Docs: len(docs), Deferred: append([]string(nil), b.rangePaths...)}
+	rep := Report{Docs: len(docs)}
 
 	items := make([]prepared, 0, len(docs))
 	seen := make(map[string]int, len(docs))
@@ -83,7 +80,11 @@ func (b *Builder) Ingest(docs []json.RawMessage, opts Options) (Report, error) {
 			return rep, fmt.Errorf("ingest: duplicate id %q (documents %d and %d)", id, first, i)
 		}
 		seen[id] = i
-		items = append(items, prepared{id: id, raw: raw, keys: b.keysFor(flat)})
+		keys, scores, err := b.keysFor(flat)
+		if err != nil {
+			return rep, fmt.Errorf("ingest: document %d: %w", i, err)
+		}
+		items = append(items, prepared{id: id, raw: raw, keys: keys, scores: scores})
 	}
 
 	for _, it := range items {
@@ -112,7 +113,7 @@ func (b *Builder) idOf(flat map[string]Field) (string, error) {
 	return id, nil
 }
 
-func (b *Builder) keysFor(flat map[string]Field) []string {
+func (b *Builder) keysFor(flat map[string]Field) ([]string, map[string]float64, error) {
 	set := map[string]struct{}{keyspace.Universe(b.m.Entity): {}}
 	for _, path := range b.setPaths {
 		for _, v := range flat[path].Values {
@@ -122,7 +123,28 @@ func (b *Builder) keysFor(flat map[string]Field) []string {
 			set[keyspace.Facet(b.m.Entity, path, v.Text)] = struct{}{}
 		}
 	}
-	return sortedKeys(set)
+
+	var scores map[string]float64
+	for _, path := range b.rangePaths {
+		f, ok := flat[path]
+		if !ok {
+			continue
+		}
+		if f.Array || len(f.Values) != 1 || f.Values[0].Kind != KindNumber {
+			return nil, nil, fmt.Errorf("range field %q must hold a single number", path)
+		}
+		score, err := strconv.ParseFloat(f.Values[0].Text, 64)
+		if err != nil {
+			return nil, nil, fmt.Errorf("range field %q: %w", path, err)
+		}
+		key := keyspace.Range(b.m.Entity, path)
+		if scores == nil {
+			scores = make(map[string]float64)
+		}
+		scores[key] = score
+		set[key] = struct{}{}
+	}
+	return sortedKeys(set), scores, nil
 }
 
 func (b *Builder) write(it prepared, rep *Report) error {
@@ -150,13 +172,20 @@ func (b *Builder) write(it prepared, rep *Report) error {
 		return nil
 	}
 
-	ops := make([]ports.Op, 0, 3+len(added)+len(removed))
+	ops := make([]ports.Op, 0, 3+len(added)+len(removed)+len(it.scores))
 	ops = append(ops, ports.PutDoc(entity, it.id, it.raw))
 	for _, k := range removed {
-		ops = append(ops, ports.Remove(k, it.id))
+		ops = append(ops, b.dropFrom(k, it.id))
 	}
 	for _, k := range added {
-		ops = append(ops, ports.Add(k, it.id))
+		if !keyspace.IsRange(entity, k) {
+			ops = append(ops, ports.Add(k, it.id))
+		}
+	}
+	for _, k := range it.keys {
+		if score, ok := it.scores[k]; ok {
+			ops = append(ops, ports.SetScore(k, it.id, score))
+		}
 	}
 	ops = append(ops, ports.Remove(rev, removed...), ports.Add(rev, added...))
 
@@ -172,6 +201,13 @@ func (b *Builder) write(it prepared, rep *Report) error {
 	rep.KeysAdded += len(added)
 	rep.KeysRemoved += len(removed)
 	return nil
+}
+
+func (b *Builder) dropFrom(key, id string) ports.Op {
+	if keyspace.IsRange(b.m.Entity, key) {
+		return ports.DelScore(key, id)
+	}
+	return ports.Remove(key, id)
 }
 
 func (b *Builder) prune(seen map[string]int, rep *Report) error {
@@ -195,7 +231,7 @@ func (b *Builder) prune(seen map[string]int, rep *Report) error {
 
 		ops := make([]ports.Op, 0, len(memberOf)+2)
 		for _, k := range memberOf {
-			ops = append(ops, ports.Remove(k, id))
+			ops = append(ops, b.dropFrom(k, id))
 		}
 		ops = append(ops, ports.DeleteKey(rev), ports.DelDoc(entity, id))
 

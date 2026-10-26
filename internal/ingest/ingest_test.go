@@ -14,8 +14,6 @@ import (
 	"github.com/joalen/lattice/internal/ingest"
 )
 
-// users is shaped like JSONPlaceholder's /users, with a few extra fields to
-// exercise booleans, arrays, nulls and opaque arrays of objects.
 const users = `[
  {"id":1,"name":"Ada","role":"admin","active":true,"age":36,"address":{"city":"Gwenborough"},"tags":["go","redis"],"nickname":null,"orders":[{"sku":"a"}]},
  {"id":2,"name":"Bob","role":"student","active":true,"age":20,"address":{"city":"Wisokyburgh"},"tags":["go"],"orders":[]},
@@ -46,7 +44,6 @@ func TestFlatten(t *testing.T) {
 	if got := flat["a.b"]; got.Array || len(got.Values) != 1 || got.Values[0] != (ingest.Scalar{Kind: ingest.KindString, Text: "x"}) {
 		t.Errorf("a.b = %+v", got)
 	}
-	// UseNumber keeps big integers exact; float64 would have mangled this.
 	if got := flat["a.n"].Values[0]; got.Kind != ingest.KindNumber || got.Text != "1234567890123456789" {
 		t.Errorf("a.n = %+v", got)
 	}
@@ -81,13 +78,13 @@ func TestProposeMapping(t *testing.T) {
 		t.Errorf("guessed id = %q, want id", m.ID)
 	}
 	want := map[string]ingest.IndexType{
-		"id":           ingest.IndexSkip,  // the identifier itself
-		"name":         ingest.IndexSkip,  // unique per document
-		"role":         ingest.IndexSet,   // low cardinality, repeats
-		"active":       ingest.IndexSet,   // bool
-		"age":          ingest.IndexRange, // number
-		"address.city": ingest.IndexSet,   // 3 distinct over 6 docs
-		"tags":         ingest.IndexSet,   // array of primitives
+		"id":           ingest.IndexSkip,
+		"name":         ingest.IndexSkip,
+		"role":         ingest.IndexSet,
+		"active":       ingest.IndexSet,
+		"age":          ingest.IndexRange,
+		"address.city": ingest.IndexSet,
+		"tags":         ingest.IndexSet,
 	}
 	for path, typ := range want {
 		if m.Fields[path] != typ {
@@ -104,7 +101,6 @@ func TestProposeMapping_NoGuessableID(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "could not guess an id") {
 		t.Fatalf("got %v", err)
 	}
-	// ...but an explicit one works.
 	if _, err := ingest.ProposeMapping("x", mustDocs(t, `[{"k":"1"},{"k":"2"}]`), ingest.ProposeOptions{ID: "k"}); err != nil {
 		t.Fatal(err)
 	}
@@ -131,6 +127,7 @@ func TestMapping_RoundTripAndValidation(t *testing.T) {
 		"typo key":     `{"entity":"u","id":"id","feilds":{}}`,
 		"no entity":    `{"id":"id","fields":{}}`,
 		"colon entity": `{"entity":"a:b","id":"id","fields":{}}`,
+		"underscore":   `{"entity":"_a","id":"id","fields":{}}`,
 		"bad type":     `{"entity":"u","id":"id","fields":{"x":"fulltext"}}`,
 	} {
 		if _, err := ingest.ParseMapping(strings.NewReader(bad)); err == nil {

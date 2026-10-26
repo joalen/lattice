@@ -3,6 +3,7 @@ package ingest_test
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -47,11 +48,7 @@ func TestIngest_BuildsIndexes(t *testing.T) {
 	if rep.Docs != 6 || rep.Created != 6 || rep.Unchanged != 0 || rep.Updated != 0 {
 		t.Errorf("report = %+v", rep)
 	}
-	if !reflect.DeepEqual(rep.Deferred, []string{"age"}) {
-		t.Errorf("Deferred = %v, want [age]", rep.Deferred)
-	}
 
-	// Universe and single-facet lookup.
 	if got := members(t, store, keyspace.Universe("user")); len(got) != 6 {
 		t.Errorf("universe = %v", got)
 	}
@@ -60,15 +57,12 @@ func TestIngest_BuildsIndexes(t *testing.T) {
 		t.Errorf("students = %v", students)
 	}
 
-	// Array fields are multi-membership: user 1 is in both "go" and "redis".
 	for _, tag := range []string{"go", "redis"} {
 		if got := members(t, store, keyspace.Facet("user", "tags", tag)); !contains(got, "1") {
 			t.Errorf("user 1 missing from tag %q: %v", tag, got)
 		}
 	}
 
-	// A real set-theory query over the built index:
-	// students AND Gwenborough, not yet touched by search at all.
 	both, err := store.Intersect(
 		keyspace.Facet("user", "role", "student"),
 		keyspace.Facet("user", "address.city", "Gwenborough"),
@@ -80,7 +74,6 @@ func TestIngest_BuildsIndexes(t *testing.T) {
 		t.Errorf("students in Gwenborough = %v", both)
 	}
 
-	// The full document round-trips byte for byte.
 	raw, err := store.GetDocument("user", "3")
 	if err != nil {
 		t.Fatal(err)
@@ -107,8 +100,6 @@ func TestIngest_IsIdempotent(t *testing.T) {
 	}
 }
 
-// The core of "diff instead of flush": changing a document moves it between
-// facet sets, and leaves no stale membership behind.
 func TestIngest_UpdateMovesMemberships(t *testing.T) {
 	store := mem.New()
 	docs := mustDocs(t, users)
@@ -117,7 +108,6 @@ func TestIngest_UpdateMovesMemberships(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// User 2: student -> teacher, tags [go] -> [go, sql].
 	changed := strings.Replace(users,
 		`{"id":2,"name":"Bob","role":"student","active":true,"age":20,"address":{"city":"Wisokyburgh"},"tags":["go"],"orders":[]}`,
 		`{"id":2,"name":"Bob","role":"teacher","active":true,"age":20,"address":{"city":"Wisokyburgh"},"tags":["go","sql"],"orders":[]}`, 1)
@@ -132,7 +122,7 @@ func TestIngest_UpdateMovesMemberships(t *testing.T) {
 	if rep.Updated != 1 || rep.Unchanged != 5 || rep.Created != 0 {
 		t.Errorf("report = %+v", rep)
 	}
-	if rep.KeysAdded != 2 || rep.KeysRemoved != 1 { // +teacher +sql, -student
+	if rep.KeysAdded != 2 || rep.KeysRemoved != 1 {
 		t.Errorf("keys added/removed = %d/%d, want 2/1", rep.KeysAdded, rep.KeysRemoved)
 	}
 
@@ -155,9 +145,8 @@ func TestIngest_Prune(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	subset := docs[:5] // user 6 (admin, McKenziehaven) disappears from the source
+	subset := docs[:5]
 
-	// Without Prune, a partial run leaves everything in place.
 	if rep, err := b.Ingest(subset, ingest.Options{}); err != nil || rep.Pruned != 0 {
 		t.Fatalf("no-prune run: %+v, %v", rep, err)
 	}
@@ -189,7 +178,6 @@ func TestIngest_Prune(t *testing.T) {
 	}
 }
 
-// Parse everything first: bad input must fail before the first write.
 func TestIngest_FailsFastWithoutPartialWrites(t *testing.T) {
 	cases := map[string]string{
 		"duplicate id": `[{"id":1,"role":"a"},{"id":2,"role":"a"},{"id":1,"role":"b"}]`,
@@ -227,4 +215,85 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+func ageOrder(t *testing.T, s ports.SetStore, min, max float64) []string {
+	t.Helper()
+	got, err := s.RangeByScore(keyspace.Range("user", "age"), min, max)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestIngest_IndexesRanges(t *testing.T) {
+	store := mem.New()
+	docs := mustDocs(t, users)
+	if _, err := newBuilder(t, store, docs).Ingest(docs, ingest.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := ageOrder(t, store, math.Inf(-1), math.Inf(1)); !reflect.DeepEqual(got, []string{"5", "2", "3", "1", "4", "6"}) {
+		t.Errorf("all by age = %v", got)
+	}
+	if got := ageOrder(t, store, 20, 40); !reflect.DeepEqual(got, []string{"2", "3", "1"}) {
+		t.Errorf("age 20..40 = %v", got)
+	}
+}
+
+func TestIngest_RangeFollowsUpdatesAndPrune(t *testing.T) {
+	store := mem.New()
+	docs := mustDocs(t, users)
+	b := newBuilder(t, store, docs)
+	if _, err := b.Ingest(docs, ingest.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := strings.Replace(users, `"name":"Bob","role":"student","active":true,"age":20,`, `"name":"Bob","role":"student","active":true,"age":60,`, 1)
+	if changed == users {
+		t.Fatal("fixture replacement did not apply")
+	}
+	rep, err := b.Ingest(mustDocs(t, changed), ingest.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Updated != 1 || rep.Unchanged != 5 {
+		t.Errorf("report = %+v", rep)
+	}
+	if got := ageOrder(t, store, 20, 40); !reflect.DeepEqual(got, []string{"3", "1"}) {
+		t.Errorf("age 20..40 after rescoring = %v", got)
+	}
+	if got := ageOrder(t, store, 60, 60); !reflect.DeepEqual(got, []string{"2"}) {
+		t.Errorf("age 60 = %v", got)
+	}
+
+	noAge := strings.Replace(changed, `"name":"Bob","role":"student","active":true,"age":60,`, `"name":"Bob","role":"student","active":true,`, 1)
+	if _, err := b.Ingest(mustDocs(t, noAge), ingest.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ageOrder(t, store, math.Inf(-1), math.Inf(1)); contains(got, "2") {
+		t.Errorf("user 2 should have left the age index: %v", got)
+	}
+
+	if _, err := b.Ingest(mustDocs(t, noAge)[:3], ingest.Options{Prune: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ageOrder(t, store, math.Inf(-1), math.Inf(1)); !reflect.DeepEqual(got, []string{"3", "1"}) {
+		t.Errorf("after prune = %v", got)
+	}
+}
+
+func TestIngest_RangeValueMustBeANumber(t *testing.T) {
+	store := mem.New()
+	m := ingest.Mapping{Entity: "user", ID: "id", Fields: map[string]ingest.IndexType{"age": ingest.IndexRange}}
+	b, err := ingest.NewBuilder(store, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Ingest(mustDocs(t, `[{"id":1,"age":"old"}]`), ingest.Options{}); err == nil {
+		t.Fatal("expected an error")
+	}
+	if n, _ := store.Cardinality(keyspace.Universe("user")); n != 0 {
+		t.Errorf("nothing should have been written, universe has %d", n)
+	}
 }
