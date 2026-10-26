@@ -16,7 +16,7 @@ func find(t *testing.T, q search.Query) search.Result {
 	store := mem.New()
 	fixture.Index(t, store)
 	q.Entity = "user"
-	res, err := search.Find(store, q)
+	res, err := search.Find(t.Context(), store, q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,12 +97,12 @@ func TestFind_LeavesNoTempKeysAndDoesNotLeakBetweenQueries(t *testing.T) {
 
 	multi := search.Query{Entity: "user", Facets: []search.Facet{{Path: "role", Values: []string{"admin", "teacher"}}}}
 	for i := 0; i < 2; i++ {
-		if _, err := search.Find(store, multi); err != nil {
+		if _, err := search.Find(t.Context(), store, multi); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	res, err := search.Find(store, search.Query{
+	res, err := search.Find(t.Context(), store, search.Query{
 		Entity: "user",
 		Facets: []search.Facet{{Path: "role", Values: []string{"student", "teacher"}}},
 		Not:    []search.Facet{{Path: "active", Values: []string{"false"}}},
@@ -115,7 +115,7 @@ func TestFind_LeavesNoTempKeysAndDoesNotLeakBetweenQueries(t *testing.T) {
 		t.Errorf("ids = %v", res.IDs)
 	}
 
-	if left, _ := store.Keys("user:_tmp:"); len(left) != 0 {
+	if left, _ := store.Keys(t.Context(), "user:_tmp:"); len(left) != 0 {
 		t.Errorf("temp keys left behind: %v", left)
 	}
 }
@@ -124,10 +124,10 @@ func TestFind_Errors(t *testing.T) {
 	store := mem.New()
 	fixture.Index(t, store)
 
-	if _, err := search.Find(store, search.Query{}); err == nil {
+	if _, err := search.Find(t.Context(), store, search.Query{}); err == nil {
 		t.Error("a query without an entity should fail")
 	}
-	if _, err := search.Find(store, search.Query{Entity: "user", Offset: -1}); err == nil {
+	if _, err := search.Find(t.Context(), store, search.Query{Entity: "user", Offset: -1}); err == nil {
 		t.Error("a negative offset should fail")
 	}
 }

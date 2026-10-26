@@ -90,11 +90,11 @@ func microBenchmarks(ctx context.Context, rdb *goredis.Client, prefix string, st
 			Title: fmt.Sprintf("Pagination, 20 results at offset %d of tier=free (%d ids), ordered by score", off, sizeA),
 			Note:  "SORT ALPHA orders by id, not by score, so it is the cheapest possible stable order rather than an equal-work comparison.",
 		}
-		run(&g, "SORT ... ALPHA LIMIT  (approach 1)", func() (int, error) {
+		run(&g, "SORT ... ALPHA LIMIT  (PRD approach 1)", func() (int, error) {
 			ids, err := rdb.Sort(ctx, a, &goredis.Sort{Alpha: true, Offset: int64(off), Count: 20}).Result()
 			return len(ids), err
 		})
-		run(&g, "ZINTERSTORE + ZRANGE  (approach 2)", func() (int, error) {
+		run(&g, "ZINTERSTORE + ZRANGE  (PRD approach 2)", func() (int, error) {
 			tx := rdb.TxPipeline()
 			tx.ZInterStore(ctx, dst, &goredis.ZStore{Keys: []string{a, score}, Weights: []float64{0, 1}})
 			page := tx.ZRevRange(ctx, dst, int64(off), int64(off+19))
@@ -103,7 +103,7 @@ func microBenchmarks(ctx context.Context, rdb *goredis.Client, prefix string, st
 			return len(page.Val()), err
 		})
 		run(&g, "current: fetch all ids, ZSCORE in batches, sort in Go", func() (int, error) {
-			res, err := search.Find(store, search.Query{
+			res, err := search.Find(ctx, store, search.Query{
 				Entity: seed.Entity,
 				Facets: []search.Facet{{Path: "tier", Values: []string{"free"}}},
 				Sort:   &search.Sort{Path: "score", Desc: true},

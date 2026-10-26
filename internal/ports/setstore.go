@@ -1,38 +1,41 @@
 package ports
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 var ErrNotFound = errors.New("not found")
 
 type SetStore interface {
-	AddToSet(setKey string, members ...string) error
-	Members(setKey string) ([]string, error)
+	AddToSet(ctx context.Context, setKey string, members ...string) error
+	Members(ctx context.Context, setKey string) ([]string, error)
 	// MembersMulti fetches several sets in one round trip; missing keys map to an empty slice.
-	MembersMulti(setKeys ...string) (map[string][]string, error)
-	Intersect(setKeys ...string) ([]string, error)
-	Union(setKeys ...string) ([]string, error)
-	Difference(setKeys ...string) ([]string, error)
-	Cardinality(setKey string) (int, error)
+	MembersMulti(ctx context.Context, setKeys ...string) (map[string][]string, error)
+	Intersect(ctx context.Context, setKeys ...string) ([]string, error)
+	Union(ctx context.Context, setKeys ...string) ([]string, error)
+	Difference(ctx context.Context, setKeys ...string) ([]string, error)
+	Cardinality(ctx context.Context, setKey string) (int, error)
 
 	// Store variants keep the work server-side (SUNIONSTORE / SINTERSTORE in Redis)
-	UnionStore(dest string, setKeys ...string) error
-	IntersectStore(dest string, setKeys ...string) error
-	IntersectCard(setKeys ...string) (int, error)
+	UnionStore(ctx context.Context, dest string, setKeys ...string) error
+	IntersectStore(ctx context.Context, dest string, setKeys ...string) error
+	IntersectCard(ctx context.Context, setKeys ...string) (int, error)
 	// IntersectCards returns |base ∩ key| for each key in order, batching round trips.
-	IntersectCards(base string, keys ...string) ([]int, error)
-	Delete(keys ...string) error
+	IntersectCards(ctx context.Context, base string, keys ...string) ([]int, error)
+	Delete(ctx context.Context, keys ...string) error
 
 	// Keys lists set and sorted-set keys that start with prefix.
-	Keys(prefix string) ([]string, error)
+	Keys(ctx context.Context, prefix string) ([]string, error)
 
 	// RangeByScore returns members with min <= score <= max, ascending by score then member.
-	RangeByScore(key string, min, max float64) ([]string, error)
+	RangeByScore(ctx context.Context, key string, min, max float64) ([]string, error)
 	// Scores omits members that have no score under key.
-	Scores(key string, members ...string) (map[string]float64, error)
+	Scores(ctx context.Context, key string, members ...string) (map[string]float64, error)
 
 	// Apply runs ops in order, all or nothing: any invalid op rejects the whole batch.
-	Apply(ops ...Op) error
+	Apply(ctx context.Context, ops ...Op) error
 
-	PutDocument(entity, id string, raw []byte) error
-	GetDocument(entity, id string) ([]byte, error)
+	PutDocument(ctx context.Context, entity, id string, raw []byte) error
+	GetDocument(ctx context.Context, entity, id string) ([]byte, error)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"slices"
@@ -51,12 +52,12 @@ type scenario struct {
 	run func(rng *rand.Rand) (int, error)
 }
 
-func scenarios(store ports.SetStore, items []seed.Item) []scenario {
+func scenarios(ctx context.Context, store ports.SetStore, items []seed.Item) []scenario {
 	pick := func(rng *rand.Rand) seed.Item { return items[rng.Intn(len(items))] }
 	facet := func(path string, vals ...string) search.Facet { return search.Facet{Path: path, Values: vals} }
 	find := func(q search.Query) (int, error) {
 		q.Entity = seed.Entity
-		res, err := search.Find(store, q)
+		res, err := search.Find(ctx, store, q)
 		return res.Total, err
 	}
 	yearRange := func(it seed.Item, spread int) search.Range {
@@ -68,23 +69,23 @@ func scenarios(store ports.SetStore, items []seed.Item) []scenario {
 
 	counts := func(q search.Query) (int, error) {
 		q.Entity = seed.Entity
-		ids, err := search.Match(store, q)
+		ids, err := search.Match(ctx, store, q)
 		if err != nil {
 			return 0, err
 		}
-		_, err = facets.Counts(store, seed.Entity, []string{"kind", "tier", "region", "owner.team"}, ids)
+		_, err = facets.Counts(ctx, store, seed.Entity, []string{"kind", "tier", "region", "owner.team"}, ids)
 		return len(ids), err
 	}
 
 	return []scenario{
 		{"get(id)", func(rng *rand.Rand) (int, error) {
-			_, err := store.GetDocument(seed.Entity, strconv.Itoa(pick(rng).ID))
+			_, err := store.GetDocument(ctx, seed.Entity, strconv.Itoa(pick(rng).ID))
 			return 1, err
 		}},
 		{"1 facet, page of 20", func(rng *rand.Rand) (int, error) {
 			return find(search.Query{Facets: []search.Facet{facet("group", pick(rng).Group)}, Limit: 20})
 		}},
-		{"3 facets (OR lists) + range, sorted, page of 20  [target]", func(rng *rand.Rand) (int, error) {
+		{"3 facets (OR lists) + range, sorted, page of 20  [PRD target]", func(rng *rand.Rand) (int, error) {
 			it := pick(rng)
 			return find(search.Query{
 				Facets: []search.Facet{
@@ -134,7 +135,7 @@ func scenarios(store ports.SetStore, items []seed.Item) []scenario {
 			return counts(search.Query{Facets: []search.Facet{facet("tier", it.Tier)}, Ranges: []search.Range{yearRange(it, 5)}})
 		}},
 		{"similar(id), top 10", func(rng *rand.Rand) (int, error) {
-			m, err := similarity.Similar(store, seed.Entity, strconv.Itoa(pick(rng).ID), similarity.Options{Limit: 10})
+			m, err := similarity.Similar(ctx, store, seed.Entity, strconv.Itoa(pick(rng).ID), similarity.Options{Limit: 10})
 			return len(m), err
 		}},
 	}

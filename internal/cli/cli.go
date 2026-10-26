@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -42,19 +43,20 @@ var (
 
 // Run executes one command and returns the process exit code: 0 on success,
 // 1 on a runtime failure, 2 on bad usage.
-func Run(args []string, stdout, stderr io.Writer, open OpenFunc) int {
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer, open OpenFunc) int {
 	a := &app{out: stdout, err: stderr, open: open}
 
 	if len(args) == 0 {
 		a.usage(stderr)
 		return 2
 	}
-	cmds := map[string]func([]string) error{
-		"propose": a.propose,
-		"ingest":  a.ingest,
-		"search":  a.search,
-		"get":     a.get,
-		"similar": a.similar,
+	cmds := map[string]func(context.Context, []string) error{
+		"discover": a.discover,
+		"propose":  a.propose,
+		"ingest":   a.ingest,
+		"search":   a.search,
+		"get":      a.get,
+		"similar":  a.similar,
 	}
 	name := args[0]
 	if name == "help" || name == "-h" || name == "--help" {
@@ -68,7 +70,7 @@ func Run(args []string, stdout, stderr io.Writer, open OpenFunc) int {
 		return 2
 	}
 
-	err := fn(args[1:])
+	err := fn(ctx, args[1:])
 	var ue usageError
 	switch {
 	case err == nil, errors.Is(err, errHelp):
@@ -87,7 +89,8 @@ func (a *app) usage(w io.Writer) {
 	fmt.Fprint(w, `lattice: set-theory search over JSON documents
 
 Usage:
-  lattice propose --entity NAME [--id PATH] PATH...
+  lattice discover [--clusters] [--limit N] PATH...
+  lattice propose --entity NAME [--id PATH] [--max-categorical N] PATH...
   lattice ingest  --mapping FILE [--prune] PATH...
   lattice search  --entity NAME [--facet path=a,b]... [--not path=a]... [--range path=lo..hi]...
                   [--sort path[:desc]] [--limit N] [--offset N] [--facets p1,p2] [--fields p1,p2]
@@ -145,10 +148,65 @@ func (a *app) emit(v any, compact bool) error {
 	return enc.Encode(v)
 }
 
-func (a *app) propose(args []string) error {
+func (a *app) discover(_ context.Context, args []string) error {
+	fs := a.flagSet("discover")
+	clusters := fs.Bool("clusters", false, "merge near-identical shapes into recurring types")
+	limit := fs.Int("limit", 20, "entries to show; 0 for all")
+	compact := fs.Bool("compact", false, "single-line JSON output")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return usageError("at least one PATH is required")
+	}
+	if *limit < 0 {
+		return usageError("--limit must not be negative")
+	}
+
+	docs, err := loadAll(fs.Args())
+	if err != nil {
+		return err
+	}
+	raws := make([][]byte, len(docs))
+	for i, d := range docs {
+		raws[i] = d
+	}
+
+	var freq map[string]int
+	if *clusters {
+		freq, err = ingest.DiscoverClusters(raws)
+	} else {
+		freq, err = ingest.DiscoverCorpus(raws)
+	}
+	if err != nil {
+		return err
+	}
+
+	type entry struct {
+		Signature string `json:"signature"`
+		Count     int    `json:"count"`
+	}
+	entries := make([]entry, 0, len(freq))
+	for sig, n := range freq {
+		entries = append(entries, entry{sig, n})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Count != entries[j].Count {
+			return entries[i].Count > entries[j].Count
+		}
+		return entries[i].Signature < entries[j].Signature
+	})
+	if *limit > 0 && *limit < len(entries) {
+		entries = entries[:*limit]
+	}
+	return a.emit(entries, *compact)
+}
+
+func (a *app) propose(_ context.Context, args []string) error {
 	fs := a.flagSet("propose")
 	entity := fs.String("entity", "", "entity name, used as the key namespace (required)")
 	id := fs.String("id", "", "dot-path of the document ID (default: guess)")
+	maxCat := fs.Int("max-categorical", 30, "most distinct values a string field may have and still be proposed as a facet")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -163,7 +221,7 @@ func (a *app) propose(args []string) error {
 	if err != nil {
 		return err
 	}
-	m, err := ingest.ProposeMapping(*entity, docs, ingest.ProposeOptions{ID: *id})
+	m, err := ingest.ProposeMapping(*entity, docs, ingest.ProposeOptions{ID: *id, MaxCategorical: *maxCat})
 	if err != nil {
 		return err
 	}
@@ -175,7 +233,7 @@ func (a *app) propose(args []string) error {
 	return err
 }
 
-func (a *app) ingest(args []string) error {
+func (a *app) ingest(ctx context.Context, args []string) error {
 	var c conn
 	fs := a.flagSet("ingest")
 	connFlags(fs, &c)
@@ -216,7 +274,7 @@ func (a *app) ingest(args []string) error {
 	if err != nil {
 		return err
 	}
-	rep, err := b.Ingest(docs, ingest.Options{Prune: *prune})
+	rep, err := b.Ingest(ctx, docs, ingest.Options{Prune: *prune})
 	if err != nil {
 		return err
 	}
@@ -235,7 +293,7 @@ type searchOutput struct {
 	Facets  map[string][]facets.Count `json:"facets,omitempty"`
 }
 
-func (a *app) search(args []string) error {
+func (a *app) search(ctx context.Context, args []string) error {
 	var c conn
 	var facetFlags, notFlags, rangeFlags multiFlag
 	fs := a.flagSet("search")
@@ -299,7 +357,7 @@ func (a *app) search(args []string) error {
 	}
 	defer done()
 
-	m, err := a.mapping(store, q.Entity)
+	m, err := a.mapping(ctx, store, q.Entity)
 	if err != nil {
 		return err
 	}
@@ -325,11 +383,11 @@ func (a *app) search(args []string) error {
 		}
 	}
 
-	ids, err := search.Match(store, q)
+	ids, err := search.Match(ctx, store, q)
 	if err != nil {
 		return err
 	}
-	page, err := search.Page(store, q, ids)
+	page, err := search.Page(ctx, store, q, ids)
 	if err != nil {
 		return err
 	}
@@ -337,14 +395,14 @@ func (a *app) search(args []string) error {
 	out := searchOutput{Total: page.Total, Offset: q.Offset, Results: make([]resultItem, 0, len(page.IDs))}
 	summaryFields := splitList(*fields)
 	for _, id := range page.IDs {
-		sum, err := summarize(store, q.Entity, id, summaryFields)
+		sum, err := summarize(ctx, store, q.Entity, id, summaryFields)
 		if err != nil {
 			return err
 		}
 		out.Results = append(out.Results, resultItem{ID: id, Summary: sum})
 	}
 	if len(facetList) > 0 {
-		out.Facets, err = facets.Counts(store, q.Entity, facetList, ids)
+		out.Facets, err = facets.Counts(ctx, store, q.Entity, facetList, ids)
 		if err != nil {
 			return err
 		}
@@ -352,7 +410,7 @@ func (a *app) search(args []string) error {
 	return a.emit(out, *compact)
 }
 
-func (a *app) get(args []string) error {
+func (a *app) get(ctx context.Context, args []string) error {
 	var c conn
 	fs := a.flagSet("get")
 	connFlags(fs, &c)
@@ -374,7 +432,7 @@ func (a *app) get(args []string) error {
 	}
 	defer done()
 
-	raw, err := store.GetDocument(*entity, id)
+	raw, err := store.GetDocument(ctx, *entity, id)
 	if errors.Is(err, ports.ErrNotFound) {
 		return fmt.Errorf("no document %q in entity %q", id, *entity)
 	}
@@ -392,7 +450,7 @@ type similarItem struct {
 	Summary map[string]any `json:"summary"`
 }
 
-func (a *app) similar(args []string) error {
+func (a *app) similar(ctx context.Context, args []string) error {
 	var c conn
 	fs := a.flagSet("similar")
 	connFlags(fs, &c)
@@ -421,7 +479,7 @@ func (a *app) similar(args []string) error {
 	}
 	defer done()
 
-	m, err := a.mapping(store, *entity)
+	m, err := a.mapping(ctx, store, *entity)
 	if err != nil {
 		return err
 	}
@@ -432,7 +490,7 @@ func (a *app) similar(args []string) error {
 		}
 	}
 
-	matches, err := similarity.Similar(store, *entity, id, similarity.Options{Paths: pathList, Limit: *limit})
+	matches, err := similarity.Similar(ctx, store, *entity, id, similarity.Options{Paths: pathList, Limit: *limit})
 	if errors.Is(err, ports.ErrNotFound) {
 		return fmt.Errorf("no document %q in entity %q", id, *entity)
 	}
@@ -443,7 +501,7 @@ func (a *app) similar(args []string) error {
 	summaryFields := splitList(*fields)
 	items := make([]similarItem, 0, len(matches))
 	for _, m := range matches {
-		sum, err := summarize(store, *entity, m.ID, summaryFields)
+		sum, err := summarize(ctx, store, *entity, m.ID, summaryFields)
 		if err != nil {
 			return err
 		}
@@ -455,8 +513,8 @@ func (a *app) similar(args []string) error {
 	}{id, items}, *compact)
 }
 
-func summarize(store ports.SetStore, entity, id string, fields []string) (map[string]any, error) {
-	raw, err := store.GetDocument(entity, id)
+func summarize(ctx context.Context, store ports.SetStore, entity, id string, fields []string) (map[string]any, error) {
+	raw, err := store.GetDocument(ctx, entity, id)
 	if err != nil {
 		return nil, fmt.Errorf("document %q: %w", id, err)
 	}
@@ -505,8 +563,8 @@ func scalarValue(s ingest.Scalar) any {
 	return s.Text
 }
 
-func (a *app) mapping(store ports.SetStore, entity string) (ingest.Mapping, error) {
-	m, err := ingest.LoadMapping(store, entity)
+func (a *app) mapping(ctx context.Context, store ports.SetStore, entity string) (ingest.Mapping, error) {
+	m, err := ingest.LoadMapping(ctx, store, entity)
 	if errors.Is(err, ports.ErrNotFound) {
 		return ingest.Mapping{}, fmt.Errorf("entity %q has not been ingested", entity)
 	}

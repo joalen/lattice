@@ -170,7 +170,7 @@ func runSize(sb *strings.Builder, cfg config, be *backend, size int) error {
 
 	timed := func(name string, docs []json.RawMessage, wantUpdated int) (onceResult, error) {
 		before, t0 := be.trips.now(), time.Now()
-		rep, err := builder.Ingest(docs, ingest.Options{})
+		rep, err := builder.Ingest(ctx, docs, ingest.Options{})
 		res := onceResult{Name: name, D: time.Since(t0), Trips: be.trips.now() - before}
 		if err != nil {
 			return res, err
@@ -212,7 +212,7 @@ func runSize(sb *strings.Builder, cfg config, be *backend, size int) error {
 
 	r := runner{iters: cfg.iters, minSamples: cfg.minSample, budget: cfg.budget, trips: be.trips, seed: cfg.seed}
 	var results []opResult
-	for _, sc := range scenarios(be.store, items) {
+	for _, sc := range scenarios(ctx, be.store, items) {
 		fmt.Fprintf(os.Stderr, "  %s\n", sc.name)
 		results = append(results, r.measure(sc.name, sc.run))
 	}

@@ -29,7 +29,7 @@ func newBuilder(t *testing.T, store ports.SetStore, docs []json.RawMessage) *ing
 
 func members(t *testing.T, s ports.SetStore, key string) []string {
 	t.Helper()
-	got, err := s.Members(key)
+	got, err := s.Members(t.Context(), key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestIngest_BuildsIndexes(t *testing.T) {
 	docs := mustDocs(t, users)
 	b := newBuilder(t, store, docs)
 
-	rep, err := b.Ingest(docs, ingest.Options{})
+	rep, err := b.Ingest(t.Context(), docs, ingest.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestIngest_BuildsIndexes(t *testing.T) {
 		}
 	}
 
-	both, err := store.Intersect(
+	both, err := store.Intersect(t.Context(),
 		keyspace.Facet("user", "role", "student"),
 		keyspace.Facet("user", "address.city", "Gwenborough"),
 	)
@@ -74,7 +74,7 @@ func TestIngest_BuildsIndexes(t *testing.T) {
 		t.Errorf("students in Gwenborough = %v", both)
 	}
 
-	raw, err := store.GetDocument("user", "3")
+	raw, err := store.GetDocument(t.Context(), "user", "3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,10 +88,10 @@ func TestIngest_IsIdempotent(t *testing.T) {
 	docs := mustDocs(t, users)
 	b := newBuilder(t, store, docs)
 
-	if _, err := b.Ingest(docs, ingest.Options{}); err != nil {
+	if _, err := b.Ingest(t.Context(), docs, ingest.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	rep, err := b.Ingest(docs, ingest.Options{})
+	rep, err := b.Ingest(t.Context(), docs, ingest.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestIngest_UpdateMovesMemberships(t *testing.T) {
 	store := mem.New()
 	docs := mustDocs(t, users)
 	b := newBuilder(t, store, docs)
-	if _, err := b.Ingest(docs, ingest.Options{}); err != nil {
+	if _, err := b.Ingest(t.Context(), docs, ingest.Options{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -115,7 +115,7 @@ func TestIngest_UpdateMovesMemberships(t *testing.T) {
 		t.Fatal("test fixture replacement did not apply")
 	}
 
-	rep, err := b.Ingest(mustDocs(t, changed), ingest.Options{})
+	rep, err := b.Ingest(t.Context(), mustDocs(t, changed), ingest.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,27 +141,27 @@ func TestIngest_Prune(t *testing.T) {
 	store := mem.New()
 	docs := mustDocs(t, users)
 	b := newBuilder(t, store, docs)
-	if _, err := b.Ingest(docs, ingest.Options{}); err != nil {
+	if _, err := b.Ingest(t.Context(), docs, ingest.Options{}); err != nil {
 		t.Fatal(err)
 	}
 
 	subset := docs[:5]
 
-	if rep, err := b.Ingest(subset, ingest.Options{}); err != nil || rep.Pruned != 0 {
+	if rep, err := b.Ingest(t.Context(), subset, ingest.Options{}); err != nil || rep.Pruned != 0 {
 		t.Fatalf("no-prune run: %+v, %v", rep, err)
 	}
-	if _, err := store.GetDocument("user", "6"); err != nil {
+	if _, err := store.GetDocument(t.Context(), "user", "6"); err != nil {
 		t.Fatalf("user 6 should still exist: %v", err)
 	}
 
-	rep, err := b.Ingest(subset, ingest.Options{Prune: true})
+	rep, err := b.Ingest(t.Context(), subset, ingest.Options{Prune: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rep.Pruned != 1 {
 		t.Errorf("Pruned = %d, want 1", rep.Pruned)
 	}
-	if _, err := store.GetDocument("user", "6"); !errors.Is(err, ports.ErrNotFound) {
+	if _, err := store.GetDocument(t.Context(), "user", "6"); !errors.Is(err, ports.ErrNotFound) {
 		t.Errorf("user 6 document: got %v, want ErrNotFound", err)
 	}
 	if got := members(t, store, keyspace.Universe("user")); contains(got, "6") {
@@ -170,10 +170,10 @@ func TestIngest_Prune(t *testing.T) {
 	if got := members(t, store, keyspace.Facet("user", "role", "admin")); contains(got, "6") {
 		t.Errorf("user 6 still an admin: %v", got)
 	}
-	if n, _ := store.Cardinality(keyspace.Facet("user", "address.city", "McKenziehaven")); n != 0 {
+	if n, _ := store.Cardinality(t.Context(), keyspace.Facet("user", "address.city", "McKenziehaven")); n != 0 {
 		t.Errorf("empty facet set should be gone, cardinality = %d", n)
 	}
-	if n, _ := store.Cardinality(keyspace.Memberships("user", "6")); n != 0 {
+	if n, _ := store.Cardinality(t.Context(), keyspace.Memberships("user", "6")); n != 0 {
 		t.Errorf("reverse index for user 6 should be gone, cardinality = %d", n)
 	}
 }
@@ -192,13 +192,13 @@ func TestIngest_FailsFastWithoutPartialWrites(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := b.Ingest(mustDocs(t, raw), ingest.Options{}); err == nil {
+			if _, err := b.Ingest(t.Context(), mustDocs(t, raw), ingest.Options{}); err == nil {
 				t.Fatal("expected an error")
 			}
-			if n, _ := store.Cardinality(keyspace.Universe("user")); n != 0 {
+			if n, _ := store.Cardinality(t.Context(), keyspace.Universe("user")); n != 0 {
 				t.Errorf("nothing should have been written, universe has %d", n)
 			}
-			if _, err := ingest.LoadMapping(store, "user"); !errors.Is(err, ports.ErrNotFound) {
+			if _, err := ingest.LoadMapping(t.Context(), store, "user"); !errors.Is(err, ports.ErrNotFound) {
 				t.Errorf("mapping saved despite failure: %v", err)
 			}
 		})
@@ -222,7 +222,7 @@ func contains(list []string, v string) bool {
 
 func ageOrder(t *testing.T, s ports.SetStore, min, max float64) []string {
 	t.Helper()
-	got, err := s.RangeByScore(keyspace.Range("user", "age"), min, max)
+	got, err := s.RangeByScore(t.Context(), keyspace.Range("user", "age"), min, max)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func ageOrder(t *testing.T, s ports.SetStore, min, max float64) []string {
 func TestIngest_IndexesRanges(t *testing.T) {
 	store := mem.New()
 	docs := mustDocs(t, users)
-	if _, err := newBuilder(t, store, docs).Ingest(docs, ingest.Options{}); err != nil {
+	if _, err := newBuilder(t, store, docs).Ingest(t.Context(), docs, ingest.Options{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -248,7 +248,7 @@ func TestIngest_RangeFollowsUpdatesAndPrune(t *testing.T) {
 	store := mem.New()
 	docs := mustDocs(t, users)
 	b := newBuilder(t, store, docs)
-	if _, err := b.Ingest(docs, ingest.Options{}); err != nil {
+	if _, err := b.Ingest(t.Context(), docs, ingest.Options{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -256,7 +256,7 @@ func TestIngest_RangeFollowsUpdatesAndPrune(t *testing.T) {
 	if changed == users {
 		t.Fatal("fixture replacement did not apply")
 	}
-	rep, err := b.Ingest(mustDocs(t, changed), ingest.Options{})
+	rep, err := b.Ingest(t.Context(), mustDocs(t, changed), ingest.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,14 +271,14 @@ func TestIngest_RangeFollowsUpdatesAndPrune(t *testing.T) {
 	}
 
 	noAge := strings.Replace(changed, `"name":"Bob","role":"student","active":true,"age":60,`, `"name":"Bob","role":"student","active":true,`, 1)
-	if _, err := b.Ingest(mustDocs(t, noAge), ingest.Options{}); err != nil {
+	if _, err := b.Ingest(t.Context(), mustDocs(t, noAge), ingest.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := ageOrder(t, store, math.Inf(-1), math.Inf(1)); contains(got, "2") {
 		t.Errorf("user 2 should have left the age index: %v", got)
 	}
 
-	if _, err := b.Ingest(mustDocs(t, noAge)[:3], ingest.Options{Prune: true}); err != nil {
+	if _, err := b.Ingest(t.Context(), mustDocs(t, noAge)[:3], ingest.Options{Prune: true}); err != nil {
 		t.Fatal(err)
 	}
 	if got := ageOrder(t, store, math.Inf(-1), math.Inf(1)); !reflect.DeepEqual(got, []string{"3", "1"}) {
@@ -293,10 +293,10 @@ func TestIngest_RangeValueMustBeANumber(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Ingest(mustDocs(t, `[{"id":1,"age":"old"}]`), ingest.Options{}); err == nil {
+	if _, err := b.Ingest(t.Context(), mustDocs(t, `[{"id":1,"age":"old"}]`), ingest.Options{}); err == nil {
 		t.Fatal("expected an error")
 	}
-	if n, _ := store.Cardinality(keyspace.Universe("user")); n != 0 {
+	if n, _ := store.Cardinality(t.Context(), keyspace.Universe("user")); n != 0 {
 		t.Errorf("nothing should have been written, universe has %d", n)
 	}
 }
@@ -306,13 +306,13 @@ func TestIngest_PersistsMapping(t *testing.T) {
 	docs := mustDocs(t, users)
 	b := newBuilder(t, store, docs)
 
-	if _, err := ingest.LoadMapping(store, "user"); !errors.Is(err, ports.ErrNotFound) {
+	if _, err := ingest.LoadMapping(t.Context(), store, "user"); !errors.Is(err, ports.ErrNotFound) {
 		t.Fatalf("before ingest: got %v, want ErrNotFound", err)
 	}
-	if _, err := b.Ingest(docs, ingest.Options{}); err != nil {
+	if _, err := b.Ingest(t.Context(), docs, ingest.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ingest.LoadMapping(store, "user")
+	got, err := ingest.LoadMapping(t.Context(), store, "user")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestIngest_PersistsMapping(t *testing.T) {
 func TestIngest_RegistersFacetValues(t *testing.T) {
 	store := mem.New()
 	docs := mustDocs(t, users)
-	if _, err := newBuilder(t, store, docs).Ingest(docs, ingest.Options{}); err != nil {
+	if _, err := newBuilder(t, store, docs).Ingest(t.Context(), docs, ingest.Options{}); err != nil {
 		t.Fatal(err)
 	}
 

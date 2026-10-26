@@ -45,7 +45,7 @@ func TestSimilar(t *testing.T) {
 	store := mem.New()
 	fixture.Index(t, store)
 
-	got, err := similarity.Similar(store, "user", "1", similarity.Options{})
+	got, err := similarity.Similar(t.Context(), store, "user", "1", similarity.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestSimilar(t *testing.T) {
 		t.Errorf("second score = %v, want 2/7", got[1].Score)
 	}
 
-	top, _ := similarity.Similar(store, "user", "1", similarity.Options{Limit: 2})
+	top, _ := similarity.Similar(t.Context(), store, "user", "1", similarity.Options{Limit: 2})
 	if len(top) != 2 || top[0].ID != "5" {
 		t.Errorf("limit: %+v", top)
 	}
@@ -74,7 +74,7 @@ func TestSimilar_RestrictedToPaths(t *testing.T) {
 	store := mem.New()
 	fixture.Index(t, store)
 
-	got, err := similarity.Similar(store, "user", "1", similarity.Options{Paths: []string{"tags"}})
+	got, err := similarity.Similar(t.Context(), store, "user", "1", similarity.Options{Paths: []string{"tags"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestSimilar_UnknownID(t *testing.T) {
 	store := mem.New()
 	fixture.Index(t, store)
 
-	if _, err := similarity.Similar(store, "user", "999", similarity.Options{}); !errors.Is(err, ports.ErrNotFound) {
+	if _, err := similarity.Similar(t.Context(), store, "user", "999", similarity.Options{}); !errors.Is(err, ports.ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)
 	}
 }

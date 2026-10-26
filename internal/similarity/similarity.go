@@ -1,6 +1,7 @@
 package similarity
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -41,8 +42,8 @@ func Jaccard(a, b map[string]struct{}) float64 {
 }
 
 // Similar ranks other documents by Jaccard similarity of their facet sets to id's.
-func Similar(store ports.SetStore, entity, id string, opts Options) ([]Match, error) {
-	own, err := store.Members(keyspace.Memberships(entity, id))
+func Similar(ctx context.Context, store ports.SetStore, entity, id string, opts Options) ([]Match, error) {
+	own, err := store.Members(ctx, keyspace.Memberships(entity, id))
 	if err != nil {
 		return nil, fmt.Errorf("similarity: %w", err)
 	}
@@ -55,7 +56,7 @@ func Similar(store ports.SetStore, entity, id string, opts Options) ([]Match, er
 	for k := range target {
 		targetKeys = append(targetKeys, k)
 	}
-	lists, err := store.MembersMulti(targetKeys...)
+	lists, err := store.MembersMulti(ctx, targetKeys...)
 	if err != nil {
 		return nil, fmt.Errorf("similarity: %w", err)
 	}
@@ -74,7 +75,7 @@ func Similar(store ports.SetStore, entity, id string, opts Options) ([]Match, er
 		candidates = append(candidates, other)
 		memberKeys = append(memberKeys, keyspace.Memberships(entity, other))
 	}
-	theirs, err := store.MembersMulti(memberKeys...)
+	theirs, err := store.MembersMulti(ctx, memberKeys...)
 	if err != nil {
 		return nil, fmt.Errorf("similarity: %w", err)
 	}

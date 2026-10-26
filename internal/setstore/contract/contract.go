@@ -68,7 +68,7 @@ func sorted(in []string) []string {
 
 func mustAdd(t *testing.T, s ports.SetStore, key string, members ...string) {
 	t.Helper()
-	if err := s.AddToSet(key, members...); err != nil {
+	if err := s.AddToSet(t.Context(), key, members...); err != nil {
 		t.Fatalf("AddToSet(%q): %v", key, err)
 	}
 }
@@ -83,7 +83,7 @@ func assertMembers(t *testing.T, got []string, want ...string) {
 
 func assertCard(t *testing.T, s ports.SetStore, key string, want int) {
 	t.Helper()
-	n, err := s.Cardinality(key)
+	n, err := s.Cardinality(t.Context(), key)
 	if err != nil {
 		t.Fatalf("Cardinality(%q): %v", key, err)
 	}
@@ -100,7 +100,7 @@ func addIdempotent(t *testing.T, s ports.SetStore) {
 
 // Redis rejects SADD with no members, so the adapter has to guard it.
 func addNoMembers(t *testing.T, s ports.SetStore) {
-	if err := s.AddToSet("a"); err != nil {
+	if err := s.AddToSet(t.Context(), "a"); err != nil {
 		t.Fatalf("AddToSet with no members should not error: %v", err)
 	}
 	assertCard(t, s, "a", 0)
@@ -111,14 +111,14 @@ func cardinalityMissing(t *testing.T, s ports.SetStore) {
 }
 
 func members(t *testing.T, s ports.SetStore) {
-	got, err := s.Members("ghost")
+	got, err := s.Members(t.Context(), "ghost")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMembers(t, got)
 
 	mustAdd(t, s, "a", "1", "2", "2", "3")
-	got, err = s.Members("a")
+	got, err = s.Members(t.Context(), "a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func membersMulti(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1", "2")
 	mustAdd(t, s, "b", "3")
 
-	got, err := s.MembersMulti("a", "b", "ghost")
+	got, err := s.MembersMulti(t.Context(), "a", "b", "ghost")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func membersMulti(t *testing.T, s ports.SetStore) {
 	assertMembers(t, got["b"], "3")
 	assertMembers(t, got["ghost"])
 
-	if got, err := s.MembersMulti(); err != nil || len(got) != 0 {
+	if got, err := s.MembersMulti(t.Context()); err != nil || len(got) != 0 {
 		t.Fatalf("no keys: %v, %v", got, err)
 	}
 }
@@ -156,11 +156,11 @@ func largeBatches(t *testing.T, s ports.SetStore) {
 		members[i] = "m" + strconv.Itoa(i)
 		ops = append(ops, ports.Add(setKeys[i], members[i]), ports.SetScore("z", members[i], float64(i)))
 	}
-	if err := s.Apply(ops...); err != nil {
+	if err := s.Apply(t.Context(), ops...); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := s.MembersMulti(setKeys...)
+	got, err := s.MembersMulti(t.Context(), setKeys...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,10 +170,10 @@ func largeBatches(t *testing.T, s ports.SetStore) {
 		}
 	}
 
-	if err := s.AddToSet("all", members...); err != nil {
+	if err := s.AddToSet(t.Context(), "all", members...); err != nil {
 		t.Fatal(err)
 	}
-	cards, err := s.IntersectCards("all", setKeys...)
+	cards, err := s.IntersectCards(t.Context(), "all", setKeys...)
 	if err != nil || len(cards) != n {
 		t.Fatalf("IntersectCards: %d results, %v", len(cards), err)
 	}
@@ -183,7 +183,7 @@ func largeBatches(t *testing.T, s ports.SetStore) {
 		}
 	}
 
-	scores, err := s.Scores("z", append(members, "nobody")...)
+	scores, err := s.Scores(t.Context(), "z", append(members, "nobody")...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func largeBatches(t *testing.T, s ports.SetStore) {
 func applyInOrder(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "stale", "1", "2")
 
-	err := s.Apply(
+	err := s.Apply(t.Context(),
 		ports.Add("fresh", "1", "2", "3"),
 		ports.Remove("fresh", "3"),
 		ports.Remove("stale", "1"),
@@ -205,49 +205,49 @@ func applyInOrder(t *testing.T, s ports.SetStore) {
 		t.Fatal(err)
 	}
 
-	got, _ := s.Members("fresh")
+	got, _ := s.Members(t.Context(), "fresh")
 	assertMembers(t, got, "1", "2")
-	got, _ = s.Members("stale")
+	got, _ = s.Members(t.Context(), "stale")
 	assertMembers(t, got, "2", "9")
 
-	if err := s.Apply(ports.Remove("fresh", "1", "2")); err != nil {
+	if err := s.Apply(t.Context(), ports.Remove("fresh", "1", "2")); err != nil {
 		t.Fatal(err)
 	}
 	assertCard(t, s, "fresh", 0)
 
-	if err := s.Apply(ports.DeleteKey("stale")); err != nil {
+	if err := s.Apply(t.Context(), ports.DeleteKey("stale")); err != nil {
 		t.Fatal(err)
 	}
 	assertCard(t, s, "stale", 0)
 }
 
 func applyDocsAndEmpty(t *testing.T, s ports.SetStore) {
-	if err := s.Apply(); err != nil {
+	if err := s.Apply(t.Context()); err != nil {
 		t.Fatalf("Apply with no ops should be a no-op: %v", err)
 	}
-	if err := s.Apply(ports.Add("a"), ports.Remove("a")); err != nil {
+	if err := s.Apply(t.Context(), ports.Add("a"), ports.Remove("a")); err != nil {
 		t.Fatalf("ops with empty member lists should be no-ops: %v", err)
 	}
 
-	if err := s.Apply(ports.PutDoc("plan", "1", []byte(`{"x":1}`)), ports.Add("idx", "1")); err != nil {
+	if err := s.Apply(t.Context(), ports.PutDoc("plan", "1", []byte(`{"x":1}`)), ports.Add("idx", "1")); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.GetDocument("plan", "1")
+	got, err := s.GetDocument(t.Context(), "plan", "1")
 	if err != nil || string(got) != `{"x":1}` {
 		t.Fatalf("PutDoc via Apply: got %q, %v", got, err)
 	}
 	assertCard(t, s, "idx", 1)
 
-	if err := s.Apply(ports.DelDoc("plan", "1"), ports.DelDoc("plan", "never-existed")); err != nil {
+	if err := s.Apply(t.Context(), ports.DelDoc("plan", "1"), ports.DelDoc("plan", "never-existed")); err != nil {
 		t.Fatalf("DelDoc should tolerate missing documents: %v", err)
 	}
-	if _, err := s.GetDocument("plan", "1"); !errors.Is(err, ports.ErrNotFound) {
+	if _, err := s.GetDocument(t.Context(), "plan", "1"); !errors.Is(err, ports.ErrNotFound) {
 		t.Fatalf("after DelDoc: got %v, want ErrNotFound", err)
 	}
 }
 
 func applyInvalid(t *testing.T, s ports.SetStore) {
-	err := s.Apply(
+	err := s.Apply(t.Context(),
 		ports.Add("x", "1"),
 		ports.Op{},
 	)
@@ -261,18 +261,18 @@ func intersectStore(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1", "2", "3")
 	mustAdd(t, s, "b", "2", "3", "4")
 
-	if err := s.IntersectStore("dst", "a", "b"); err != nil {
+	if err := s.IntersectStore(t.Context(), "dst", "a", "b"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.Members("dst")
+	got, _ := s.Members(t.Context(), "dst")
 	assertMembers(t, got, "2", "3")
 
-	if err := s.IntersectStore("dst", "a", "ghost"); err != nil {
+	if err := s.IntersectStore(t.Context(), "dst", "a", "ghost"); err != nil {
 		t.Fatal(err)
 	}
 	assertCard(t, s, "dst", 0)
 
-	if err := s.IntersectStore("dst"); err == nil {
+	if err := s.IntersectStore(t.Context(), "dst"); err == nil {
 		t.Fatal("expected an error for zero keys")
 	}
 }
@@ -289,12 +289,12 @@ func intersectCard(t *testing.T, s ports.SetStore) {
 		{[]string{"a"}, 3},
 		{[]string{"a", "ghost"}, 0},
 	} {
-		n, err := s.IntersectCard(tc.keys...)
+		n, err := s.IntersectCard(t.Context(), tc.keys...)
 		if err != nil || n != tc.want {
 			t.Fatalf("IntersectCard(%v) = %d, %v; want %d", tc.keys, n, err, tc.want)
 		}
 	}
-	if _, err := s.IntersectCard(); err == nil {
+	if _, err := s.IntersectCard(t.Context()); err == nil {
 		t.Fatal("expected an error for zero keys")
 	}
 }
@@ -304,17 +304,17 @@ func intersectCards(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1", "2", "9")
 	mustAdd(t, s, "b", "4")
 
-	got, err := s.IntersectCards("base", "a", "b", "ghost", "base")
+	got, err := s.IntersectCards(t.Context(), "base", "a", "b", "ghost", "base")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(got, []int{2, 1, 0, 4}) {
 		t.Fatalf("got %v, want [2 1 0 4]", got)
 	}
-	if got, err := s.IntersectCards("base"); err != nil || len(got) != 0 {
+	if got, err := s.IntersectCards(t.Context(), "base"); err != nil || len(got) != 0 {
 		t.Fatalf("no keys: %v, %v", got, err)
 	}
-	if got, _ := s.IntersectCards("ghost", "a"); !reflect.DeepEqual(got, []int{0}) {
+	if got, _ := s.IntersectCards(t.Context(), "ghost", "a"); !reflect.DeepEqual(got, []int{0}) {
 		t.Fatalf("missing base: %v", got)
 	}
 }
@@ -325,32 +325,32 @@ func keysByPrefix(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "p:city:x", "1")
 	mustAdd(t, s, "x*y:1", "1")
 	mustAdd(t, s, "xzzy:1", "1")
-	if err := s.Apply(ports.SetScore("p:_range:age", "1", 30)); err != nil {
+	if err := s.Apply(t.Context(), ports.SetScore("p:_range:age", "1", 30)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutDocument("p", "role:admin", []byte("{}")); err != nil {
+	if err := s.PutDocument(t.Context(), "p", "role:admin", []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := s.Keys("p:role:")
+	got, err := s.Keys(t.Context(), "p:role:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMembers(t, got, "p:role:admin", "p:role:student")
 
-	got, _ = s.Keys("p:")
+	got, _ = s.Keys(t.Context(), "p:")
 	assertMembers(t, got, "p:role:admin", "p:role:student", "p:city:x", "p:_range:age")
 
 	// Glob characters in the prefix are literal.
-	got, _ = s.Keys("x*y:")
+	got, _ = s.Keys(t.Context(), "x*y:")
 	assertMembers(t, got, "x*y:1")
 
-	got, _ = s.Keys("nothing:")
+	got, _ = s.Keys(t.Context(), "nothing:")
 	assertMembers(t, got)
 }
 
 func sortedScores(t *testing.T, s ports.SetStore) {
-	err := s.Apply(
+	err := s.Apply(t.Context(),
 		ports.SetScore("age", "a", 30),
 		ports.SetScore("age", "b", 20),
 		ports.SetScore("age", "c", 20),
@@ -362,7 +362,7 @@ func sortedScores(t *testing.T, s ports.SetStore) {
 
 	ordered := func(min, max float64) []string {
 		t.Helper()
-		got, err := s.RangeByScore("age", min, max)
+		got, err := s.RangeByScore(t.Context(), "age", min, max)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -381,37 +381,37 @@ func sortedScores(t *testing.T, s ports.SetStore) {
 	if got := ordered(100, 200); len(got) != 0 {
 		t.Fatalf("empty range = %v", got)
 	}
-	if got, _ := s.RangeByScore("ghost", math.Inf(-1), math.Inf(1)); len(got) != 0 {
+	if got, _ := s.RangeByScore(t.Context(), "ghost", math.Inf(-1), math.Inf(1)); len(got) != 0 {
 		t.Fatalf("missing key = %v", got)
 	}
 
-	scores, err := s.Scores("age", "a", "d", "nobody")
+	scores, err := s.Scores(t.Context(), "age", "a", "d", "nobody")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(scores, map[string]float64{"a": 30, "d": 45.5}) {
 		t.Fatalf("Scores = %v", scores)
 	}
-	if got, err := s.Scores("age"); err != nil || len(got) != 0 {
+	if got, err := s.Scores(t.Context(), "age"); err != nil || len(got) != 0 {
 		t.Fatalf("Scores with no members = %v, %v", got, err)
 	}
 
 	// Setting again replaces the score.
-	if err := s.Apply(ports.SetScore("age", "a", 5)); err != nil {
+	if err := s.Apply(t.Context(), ports.SetScore("age", "a", 5)); err != nil {
 		t.Fatal(err)
 	}
 	if got := ordered(math.Inf(-1), 10); !reflect.DeepEqual(got, []string{"a"}) {
 		t.Fatalf("after rescoring = %v", got)
 	}
 
-	if err := s.Apply(ports.DelScore("age", "a"), ports.DelScore("age", "never")); err != nil {
+	if err := s.Apply(t.Context(), ports.DelScore("age", "a"), ports.DelScore("age", "never")); err != nil {
 		t.Fatal(err)
 	}
 	if got := ordered(math.Inf(-1), math.Inf(1)); !reflect.DeepEqual(got, []string{"b", "c", "d"}) {
 		t.Fatalf("after DelScore = %v", got)
 	}
 
-	if err := s.Delete("age"); err != nil {
+	if err := s.Delete(t.Context(), "age"); err != nil {
 		t.Fatal(err)
 	}
 	if got := ordered(math.Inf(-1), math.Inf(1)); len(got) != 0 {
@@ -420,14 +420,14 @@ func sortedScores(t *testing.T, s ports.SetStore) {
 }
 
 func applyScores(t *testing.T, s ports.SetStore) {
-	err := s.Apply(
+	err := s.Apply(t.Context(),
 		ports.SetScore("z", "1", 1),
 		ports.Op{Kind: ports.OpSetScore, Key: "z"},
 	)
 	if err == nil {
 		t.Fatal("expected an error for a score op without a member")
 	}
-	if got, _ := s.RangeByScore("z", math.Inf(-1), math.Inf(1)); len(got) != 0 {
+	if got, _ := s.RangeByScore(t.Context(), "z", math.Inf(-1), math.Inf(1)); len(got) != 0 {
 		t.Fatalf("nothing should have been applied, got %v", got)
 	}
 }
@@ -437,19 +437,19 @@ func intersect(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "b", "2", "3", "4")
 	mustAdd(t, s, "c", "3", "4", "5")
 
-	got, err := s.Intersect("a", "b")
+	got, err := s.Intersect(t.Context(), "a", "b")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMembers(t, got, "2", "3")
 
-	got, err = s.Intersect("a", "b", "c")
+	got, err = s.Intersect(t.Context(), "a", "b", "c")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMembers(t, got, "3")
 
-	got, err = s.Intersect("a")
+	got, err = s.Intersect(t.Context(), "a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,13 +459,13 @@ func intersect(t *testing.T, s ports.SetStore) {
 func intersectMissing(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1", "2")
 
-	got, err := s.Intersect("a", "ghost")
+	got, err := s.Intersect(t.Context(), "a", "ghost")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMembers(t, got)
 
-	got, err = s.Intersect("ghost", "a")
+	got, err = s.Intersect(t.Context(), "ghost", "a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func intersectMissing(t *testing.T, s ports.SetStore) {
 }
 
 func intersectNoKeys(t *testing.T, s ports.SetStore) {
-	if _, err := s.Intersect(); err == nil {
+	if _, err := s.Intersect(t.Context()); err == nil {
 		t.Fatal("expected an error for zero keys")
 	}
 }
@@ -483,13 +483,13 @@ func union(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "b", "2", "3")
 	mustAdd(t, s, "c", "9")
 
-	got, err := s.Union("a", "b")
+	got, err := s.Union(t.Context(), "a", "b")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMembers(t, got, "1", "2", "3")
 
-	got, err = s.Union("a", "b", "c")
+	got, err = s.Union(t.Context(), "a", "b", "c")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func union(t *testing.T, s ports.SetStore) {
 
 func unionMissing(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1")
-	got, err := s.Union("a", "ghost")
+	got, err := s.Union(t.Context(), "a", "ghost")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,19 +510,19 @@ func difference(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "bs", "1", "3")
 	mustAdd(t, s, "cs", "3", "4")
 
-	got, err := s.Difference("universe", "bs")
+	got, err := s.Difference(t.Context(), "universe", "bs")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMembers(t, got, "2", "4")
 
-	got, err = s.Difference("universe", "bs", "cs")
+	got, err = s.Difference(t.Context(), "universe", "bs", "cs")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMembers(t, got, "2")
 
-	got, err = s.Difference("bs", "universe")
+	got, err = s.Difference(t.Context(), "bs", "universe")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +530,7 @@ func difference(t *testing.T, s ports.SetStore) {
 }
 
 func differenceNoKeys(t *testing.T, s ports.SetStore) {
-	if _, err := s.Difference(); err == nil {
+	if _, err := s.Difference(t.Context()); err == nil {
 		t.Fatal("expected an error for zero keys")
 	}
 }
@@ -539,19 +539,19 @@ func unionStore(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1", "2")
 	mustAdd(t, s, "b", "2", "3")
 
-	if err := s.UnionStore("dst", "a", "b"); err != nil {
+	if err := s.UnionStore(t.Context(), "dst", "a", "b"); err != nil {
 		t.Fatal(err)
 	}
 	assertCard(t, s, "dst", 3)
 
 	// dst is replaced, not appended to.
-	if err := s.UnionStore("dst", "a"); err != nil {
+	if err := s.UnionStore(t.Context(), "dst", "a"); err != nil {
 		t.Fatal(err)
 	}
 	assertCard(t, s, "dst", 2)
 
 	// Redis deletes an emptied key, mem keeps an empty set; both read as 0.
-	if err := s.UnionStore("dst", "ghost"); err != nil {
+	if err := s.UnionStore(t.Context(), "dst", "ghost"); err != nil {
 		t.Fatal(err)
 	}
 	assertCard(t, s, "dst", 0)
@@ -561,23 +561,23 @@ func deleteKeys(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1")
 	mustAdd(t, s, "b", "2")
 
-	if err := s.Delete("a", "never-existed"); err != nil {
+	if err := s.Delete(t.Context(), "a", "never-existed"); err != nil {
 		t.Fatalf("Delete should tolerate missing keys: %v", err)
 	}
 	assertCard(t, s, "a", 0)
 	assertCard(t, s, "b", 1)
 
-	if err := s.Delete(); err != nil {
+	if err := s.Delete(t.Context()); err != nil {
 		t.Fatalf("Delete with no keys should be a no-op: %v", err)
 	}
 }
 
 func docRoundTrip(t *testing.T, s ports.SetStore) {
 	want := []byte(`{"major":"cs","credits":120}`)
-	if err := s.PutDocument("plan", "1", want); err != nil {
+	if err := s.PutDocument(t.Context(), "plan", "1", want); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.GetDocument("plan", "1")
+	got, err := s.GetDocument(t.Context(), "plan", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,25 +585,25 @@ func docRoundTrip(t *testing.T, s ports.SetStore) {
 		t.Fatalf("got %s, want %s", got, want)
 	}
 
-	if err := s.PutDocument("plan", "1", []byte(`{"v":2}`)); err != nil {
+	if err := s.PutDocument(t.Context(), "plan", "1", []byte(`{"v":2}`)); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.GetDocument("plan", "1")
+	got, _ = s.GetDocument(t.Context(), "plan", "1")
 	if string(got) != `{"v":2}` {
 		t.Fatalf("overwrite failed, got %s", got)
 	}
 }
 
 func docMissingAndIsolation(t *testing.T, s ports.SetStore) {
-	_, err := s.GetDocument("plan", "404")
+	_, err := s.GetDocument(t.Context(), "plan", "404")
 	if !errors.Is(err, ports.ErrNotFound) {
 		t.Fatalf("missing document: got %v, want an error wrapping ports.ErrNotFound", err)
 	}
 
-	if err := s.PutDocument("plan", "1", []byte(`"plan-one"`)); err != nil {
+	if err := s.PutDocument(t.Context(), "plan", "1", []byte(`"plan-one"`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetDocument("course", "1"); !errors.Is(err, ports.ErrNotFound) {
+	if _, err := s.GetDocument(t.Context(), "course", "1"); !errors.Is(err, ports.ErrNotFound) {
 		t.Fatal("same id under a different entity must not collide")
 	}
 }
@@ -612,10 +612,10 @@ func setLaws(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1", "2", "3", "4")
 	mustAdd(t, s, "b", "3", "4", "5")
 
-	i, _ := s.Intersect("a", "b")
-	u, _ := s.Union("a", "b")
-	aMinusB, _ := s.Difference("a", "b")
-	bMinusA, _ := s.Difference("b", "a")
+	i, _ := s.Intersect(t.Context(), "a", "b")
+	u, _ := s.Union(t.Context(), "a", "b")
+	aMinusB, _ := s.Difference(t.Context(), "a", "b")
+	bMinusA, _ := s.Difference(t.Context(), "b", "a")
 
 	// |A ∪ B| = |A| + |B| − |A ∩ B|
 	if len(u) != 4+3-len(i) {
@@ -641,7 +641,7 @@ func concurrentAdds(t *testing.T, s ports.SetStore) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < perWorker; i++ {
-				if err := s.AddToSet("shared", string(rune('A'+w))+"-"+strconv.Itoa(i)); err != nil {
+				if err := s.AddToSet(t.Context(), "shared", string(rune('A'+w))+"-"+strconv.Itoa(i)); err != nil {
 					t.Error(err)
 					return
 				}

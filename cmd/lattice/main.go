@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -14,7 +15,10 @@ import (
 )
 
 func main() {
-	os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr, openRedis))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	code := cli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, openRedis)
+	stop()
+	os.Exit(code)
 }
 
 func openRedis(addr, prefix string) (ports.SetStore, func() error, error) {

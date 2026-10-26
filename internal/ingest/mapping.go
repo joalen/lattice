@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,17 +62,17 @@ const metaEntity = "_mapping"
 
 // SaveMapping records the mapping an entity was indexed with, so queries can
 // tell an unindexed field from a field with no matches.
-func SaveMapping(store ports.SetStore, m Mapping) error {
+func SaveMapping(ctx context.Context, store ports.SetStore, m Mapping) error {
 	data, err := m.JSON()
 	if err != nil {
 		return err
 	}
-	return store.PutDocument(metaEntity, m.Entity, data)
+	return store.PutDocument(ctx, metaEntity, m.Entity, data)
 }
 
 // LoadMapping returns an error wrapping ports.ErrNotFound if the entity was never ingested.
-func LoadMapping(store ports.SetStore, entity string) (Mapping, error) {
-	raw, err := store.GetDocument(metaEntity, entity)
+func LoadMapping(ctx context.Context, store ports.SetStore, entity string) (Mapping, error) {
+	raw, err := store.GetDocument(ctx, metaEntity, entity)
 	if err != nil {
 		return Mapping{}, fmt.Errorf("mapping for entity %q: %w", entity, err)
 	}

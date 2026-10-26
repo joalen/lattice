@@ -16,7 +16,7 @@ func TestCounts_WithinCurrentFilter(t *testing.T) {
 	store := mem.New()
 	fixture.Index(t, store)
 
-	ids, err := search.Match(store, search.Query{
+	ids, err := search.Match(t.Context(), store, search.Query{
 		Entity: "user",
 		Facets: []search.Facet{{Path: "role", Values: []string{"student"}}},
 	})
@@ -24,7 +24,7 @@ func TestCounts_WithinCurrentFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := facets.Counts(store, "user", []string{"active", "address.city", "tags", "role"}, ids)
+	got, err := facets.Counts(t.Context(), store, "user", []string{"active", "address.city", "tags", "role"}, ids)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestCounts_WithinCurrentFilter(t *testing.T) {
 		t.Errorf("got  %v\nwant %v", got, want)
 	}
 
-	if left, _ := store.Keys("user:_tmp:"); len(left) != 0 {
+	if left, _ := store.Keys(t.Context(), "user:_tmp:"); len(left) != 0 {
 		t.Errorf("temp keys left behind: %v", left)
 	}
 }
@@ -48,12 +48,12 @@ func TestCounts_EmptyResultAndUnknownPath(t *testing.T) {
 	store := mem.New()
 	fixture.Index(t, store)
 
-	got, err := facets.Counts(store, "user", []string{"role"}, nil)
+	got, err := facets.Counts(t.Context(), store, "user", []string{"role"}, nil)
 	if err != nil || len(got) != 0 {
 		t.Errorf("empty ids: %v, %v", got, err)
 	}
 
-	got, err = facets.Counts(store, "user", []string{"nope"}, []string{"1", "2"})
+	got, err = facets.Counts(t.Context(), store, "user", []string{"nope"}, []string{"1", "2"})
 	if err != nil || len(got) != 0 {
 		t.Errorf("unknown path: %v, %v", got, err)
 	}
@@ -72,15 +72,15 @@ func TestCounts_ValueThatLostAllItsDocumentsIsOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Ingest(docs, ingest.Options{}); err != nil {
+	if _, err := b.Ingest(t.Context(), docs, ingest.Options{}); err != nil {
 		t.Fatal(err)
 	}
 
-	ids, err := search.Match(store, search.Query{Entity: "user"})
+	ids, err := search.Match(t.Context(), store, search.Query{Entity: "user"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := facets.Counts(store, "user", []string{"address.city"}, ids)
+	got, err := facets.Counts(t.Context(), store, "user", []string{"address.city"}, ids)
 	if err != nil {
 		t.Fatal(err)
 	}

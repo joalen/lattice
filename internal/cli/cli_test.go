@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -27,7 +28,7 @@ type harness struct {
 func (h *harness) run(args ...string) (stdout, stderr string, code int) {
 	h.t.Helper()
 	var out, errb bytes.Buffer
-	code = cli.Run(args, &out, &errb, func(addr, prefix string) (ports.SetStore, func() error, error) {
+	code = cli.Run(h.t.Context(), args, &out, &errb, func(addr, prefix string) (ports.SetStore, func() error, error) {
 		return h.store, func() error { return nil }, nil
 	})
 	return out.String(), errb.String(), code
@@ -118,6 +119,68 @@ func TestProposeIngestRoundTrip(t *testing.T) {
 	}
 	if rep.Unchanged != 6 || rep.Created != 0 {
 		t.Errorf("second ingest = %+v", rep)
+	}
+}
+
+func TestDiscover(t *testing.T) {
+	h := &harness{t: t, store: mem.New(), dir: t.TempDir()}
+	users := h.write("users.json", fixture.Users)
+
+	type entry struct {
+		Signature string
+		Count     int
+	}
+	var shapes []entry
+	if err := json.Unmarshal([]byte(h.mustRun("discover", users)), &shapes); err != nil {
+		t.Fatal(err)
+	}
+	if len(shapes) == 0 || shapes[0].Signature != "string" {
+		t.Fatalf("most common shape should be string, got %+v", shapes)
+	}
+	for i := 1; i < len(shapes); i++ {
+		if shapes[i].Count > shapes[i-1].Count {
+			t.Errorf("not sorted by count: %+v", shapes)
+		}
+	}
+
+	var limited []entry
+	if err := json.Unmarshal([]byte(h.mustRun("discover", "--limit", "2", users)), &limited); err != nil || len(limited) != 2 {
+		t.Errorf("--limit 2: %v, %v", limited, err)
+	}
+
+	var clustered []entry
+	if err := json.Unmarshal([]byte(h.mustRun("discover", "--clusters", "--limit", "0", users)), &clustered); err != nil {
+		t.Fatal(err)
+	}
+	if len(clustered) == 0 || !strings.Contains(clustered[0].Signature, "#") {
+		t.Errorf("--clusters should report cluster ids, got %+v", clustered)
+	}
+
+	if _, _, code := h.run("discover"); code != 2 {
+		t.Errorf("no path: exit %d, want 2", code)
+	}
+}
+
+func TestProposeMaxCategorical(t *testing.T) {
+	h := &harness{t: t, store: mem.New(), dir: t.TempDir()}
+	var docs []string
+	for i := 0; i < 100; i++ {
+		docs = append(docs, fmt.Sprintf(`{"id":%d,"g":"v%d"}`, i, i%40))
+	}
+	path := h.write("d.json", "["+strings.Join(docs, ",")+"]")
+
+	fieldType := func(args ...string) ingest.IndexType {
+		m, err := ingest.ParseMapping(strings.NewReader(h.mustRun(append([]string{"propose", "--entity", "x"}, append(args, path)...)...)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.Fields["g"]
+	}
+	if got := fieldType(); got != ingest.IndexSkip {
+		t.Errorf("40 distinct values with the default limit: got %q, want skip", got)
+	}
+	if got := fieldType("--max-categorical", "50"); got != ingest.IndexSet {
+		t.Errorf("with --max-categorical 50: got %q, want set", got)
 	}
 }
 
@@ -288,7 +351,7 @@ func TestSimilar(t *testing.T) {
 func TestConnectionFlagsReachTheOpener(t *testing.T) {
 	var gotAddr, gotPrefix string
 	var out, errb bytes.Buffer
-	code := cli.Run([]string{"get", "--redis", "db.internal:6380", "--prefix", "dev:", "--entity", "user", "1"}, &out, &errb,
+	code := cli.Run(t.Context(), []string{"get", "--redis", "db.internal:6380", "--prefix", "dev:", "--entity", "user", "1"}, &out, &errb,
 		func(addr, prefix string) (ports.SetStore, func() error, error) {
 			gotAddr, gotPrefix = addr, prefix
 			return mem.New(), func() error { return nil }, nil

@@ -1,6 +1,7 @@
 package facets
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"sort"
@@ -20,7 +21,7 @@ type Count struct {
 // ids carry each. Values with a zero count are omitted; results are ordered by
 // count descending, then value. Round trips stay constant however many values
 // a field has.
-func Counts(store ports.SetStore, entity string, paths []string, ids []string) (map[string][]Count, error) {
+func Counts(ctx context.Context, store ports.SetStore, entity string, paths []string, ids []string) (map[string][]Count, error) {
 	out := make(map[string][]Count, len(paths))
 	if len(ids) == 0 || len(paths) == 0 {
 		return out, nil
@@ -30,7 +31,7 @@ func Counts(store ports.SetStore, entity string, paths []string, ids []string) (
 	for i, p := range paths {
 		valueSets[i] = keyspace.Values(entity, p)
 	}
-	known, err := store.MembersMulti(valueSets...)
+	known, err := store.MembersMulti(ctx, valueSets...)
 	if err != nil {
 		return nil, fmt.Errorf("facets: %w", err)
 	}
@@ -49,11 +50,11 @@ func Counts(store ports.SetStore, entity string, paths []string, ids []string) (
 	}
 
 	current := entity + ":_tmp:" + rand.Text()
-	defer func() { _ = store.Delete(current) }()
-	if err := store.AddToSet(current, ids...); err != nil {
+	defer ports.DeleteDetached(ctx, store, current)
+	if err := store.AddToSet(ctx, current, ids...); err != nil {
 		return nil, fmt.Errorf("facets: %w", err)
 	}
-	cards, err := store.IntersectCards(current, keys...)
+	cards, err := store.IntersectCards(ctx, current, keys...)
 	if err != nil {
 		return nil, fmt.Errorf("facets: %w", err)
 	}

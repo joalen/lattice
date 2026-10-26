@@ -1,6 +1,7 @@
 package mem
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -31,7 +32,7 @@ func New() *Store {
 var _ ports.SetStore = (*Store)(nil)
 
 // AddToSet ingests an initial string and one or more strings after and create out a key-value pairing
-func (s *Store) AddToSet(setKey string, members ...string) error {
+func (s *Store) AddToSet(_ context.Context, setKey string, members ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -39,7 +40,7 @@ func (s *Store) AddToSet(setKey string, members ...string) error {
 	return nil
 }
 
-func (s *Store) Members(setKey string) ([]string, error) {
+func (s *Store) Members(_ context.Context, setKey string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -47,7 +48,7 @@ func (s *Store) Members(setKey string) ([]string, error) {
 }
 
 // Cardinality returns the count of all distinct elements in a setKey (from set theory)
-func (s *Store) MembersMulti(setKeys ...string) (map[string][]string, error) {
+func (s *Store) MembersMulti(_ context.Context, setKeys ...string) (map[string][]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -58,7 +59,7 @@ func (s *Store) MembersMulti(setKeys ...string) (map[string][]string, error) {
 	return out, nil
 }
 
-func (s *Store) Cardinality(setKey string) (int, error) {
+func (s *Store) Cardinality(_ context.Context, setKey string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -66,7 +67,7 @@ func (s *Store) Cardinality(setKey string) (int, error) {
 }
 
 // Intersect derives common setKey within setKeys (essentially intersection from set theory)
-func (s *Store) Intersect(setKeys ...string) ([]string, error) {
+func (s *Store) Intersect(_ context.Context, setKeys ...string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -87,7 +88,7 @@ func (s *Store) Intersect(setKeys ...string) ([]string, error) {
 }
 
 // Union aggregates setKeys within setKeys (essentially union from set theory)
-func (s *Store) Union(setKeys ...string) ([]string, error) {
+func (s *Store) Union(_ context.Context, setKeys ...string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -101,7 +102,7 @@ func (s *Store) Union(setKeys ...string) ([]string, error) {
 }
 
 // Difference does an intersect between two setKeys with one setKey becoming the complement (essentially difference from set theory)
-func (s *Store) Difference(setKeys ...string) ([]string, error) {
+func (s *Store) Difference(_ context.Context, setKeys ...string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -119,7 +120,7 @@ func (s *Store) Difference(setKeys ...string) ([]string, error) {
 	return keys(result), nil
 }
 
-func (s *Store) UnionStore(dest string, setKeys ...string) error {
+func (s *Store) UnionStore(_ context.Context, dest string, setKeys ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -133,7 +134,7 @@ func (s *Store) UnionStore(dest string, setKeys ...string) error {
 	return nil
 }
 
-func (s *Store) IntersectStore(dest string, setKeys ...string) error {
+func (s *Store) IntersectStore(_ context.Context, dest string, setKeys ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -144,7 +145,7 @@ func (s *Store) IntersectStore(dest string, setKeys ...string) error {
 	return nil
 }
 
-func (s *Store) IntersectCard(setKeys ...string) (int, error) {
+func (s *Store) IntersectCard(_ context.Context, setKeys ...string) (int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -154,7 +155,7 @@ func (s *Store) IntersectCard(setKeys ...string) (int, error) {
 	return len(s.intersectLocked(setKeys)), nil
 }
 
-func (s *Store) IntersectCards(base string, setKeys ...string) ([]int, error) {
+func (s *Store) IntersectCards(_ context.Context, base string, setKeys ...string) ([]int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -169,7 +170,7 @@ func (s *Store) IntersectCards(base string, setKeys ...string) ([]int, error) {
 	return out, nil
 }
 
-func (s *Store) Delete(keys ...string) error {
+func (s *Store) Delete(_ context.Context, keys ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -180,7 +181,7 @@ func (s *Store) Delete(keys ...string) error {
 	return nil
 }
 
-func (s *Store) Keys(prefix string) ([]string, error) {
+func (s *Store) Keys(_ context.Context, prefix string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -199,7 +200,7 @@ func (s *Store) Keys(prefix string) ([]string, error) {
 	return out, nil
 }
 
-func (s *Store) RangeByScore(key string, min, max float64) ([]string, error) {
+func (s *Store) RangeByScore(_ context.Context, key string, min, max float64) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -219,7 +220,7 @@ func (s *Store) RangeByScore(key string, min, max float64) ([]string, error) {
 	return out, nil
 }
 
-func (s *Store) Scores(key string, members ...string) (map[string]float64, error) {
+func (s *Store) Scores(_ context.Context, key string, members ...string) (map[string]float64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -233,7 +234,7 @@ func (s *Store) Scores(key string, members ...string) (map[string]float64, error
 }
 
 // Apply validates every op first, then applies them under one lock, so a bad op leaves the store untouched.
-func (s *Store) Apply(ops ...ports.Op) error {
+func (s *Store) Apply(_ context.Context, ops ...ports.Op) error {
 	for _, op := range ops {
 		if err := op.Validate(); err != nil {
 			return err
@@ -271,7 +272,7 @@ func (s *Store) Apply(ops ...ports.Op) error {
 	return nil
 }
 
-func (s *Store) PutDocument(entity, id string, raw []byte) error {
+func (s *Store) PutDocument(_ context.Context, entity, id string, raw []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -279,7 +280,7 @@ func (s *Store) PutDocument(entity, id string, raw []byte) error {
 	return nil
 }
 
-func (s *Store) GetDocument(entity, id string) ([]byte, error) {
+func (s *Store) GetDocument(_ context.Context, entity, id string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

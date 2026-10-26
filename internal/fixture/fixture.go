@@ -32,7 +32,7 @@ func Index(t testing.TB, store ports.SetStore) ingest.Mapping {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Ingest(docs, ingest.Options{}); err != nil {
+	if _, err := b.Ingest(t.Context(), docs, ingest.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	return m

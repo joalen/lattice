@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,7 +65,7 @@ type prepared struct {
 }
 
 // Ingest validates every document before writing any, then writes each as an atomic batch.
-func (b *Builder) Ingest(docs []json.RawMessage, opts Options) (Report, error) {
+func (b *Builder) Ingest(ctx context.Context, docs []json.RawMessage, opts Options) (Report, error) {
 	rep := Report{Docs: len(docs)}
 
 	items := make([]prepared, 0, len(docs))
@@ -90,18 +91,18 @@ func (b *Builder) Ingest(docs []json.RawMessage, opts Options) (Report, error) {
 		items = append(items, prepared{id: id, raw: raw, keys: keys, scores: scores, facets: refs})
 	}
 
-	if err := SaveMapping(b.store, b.m); err != nil {
+	if err := SaveMapping(ctx, b.store, b.m); err != nil {
 		return rep, fmt.Errorf("ingest: save mapping: %w", err)
 	}
 
 	for _, it := range items {
-		if err := b.write(it, &rep); err != nil {
+		if err := b.write(ctx, it, &rep); err != nil {
 			return rep, err
 		}
 	}
 
 	if opts.Prune {
-		if err := b.prune(seen, &rep); err != nil {
+		if err := b.prune(ctx, seen, &rep); err != nil {
 			return rep, err
 		}
 	}
@@ -157,11 +158,11 @@ func (b *Builder) keysFor(flat map[string]Field) ([]string, map[string]float64, 
 	return sortedKeys(set), scores, refs, nil
 }
 
-func (b *Builder) write(it prepared, rep *Report) error {
+func (b *Builder) write(ctx context.Context, it prepared, rep *Report) error {
 	entity := b.m.Entity
 	rev := keyspace.Memberships(entity, it.id)
 
-	oldList, err := b.store.Members(rev)
+	oldList, err := b.store.Members(ctx, rev)
 	if err != nil {
 		return fmt.Errorf("ingest: %s: read memberships: %w", it.id, err)
 	}
@@ -171,7 +172,7 @@ func (b *Builder) write(it prepared, rep *Report) error {
 	added := difference(it.keys, oldKeys)
 	removed := difference(oldList, newKeys)
 
-	existing, err := b.store.GetDocument(entity, it.id)
+	existing, err := b.store.GetDocument(ctx, entity, it.id)
 	created := errors.Is(err, ports.ErrNotFound)
 	if err != nil && !created {
 		return fmt.Errorf("ingest: %s: read document: %w", it.id, err)
@@ -202,7 +203,7 @@ func (b *Builder) write(it prepared, rep *Report) error {
 	}
 	ops = append(ops, ports.Remove(rev, removed...), ports.Add(rev, added...))
 
-	if err := b.store.Apply(ops...); err != nil {
+	if err := b.store.Apply(ctx, ops...); err != nil {
 		return fmt.Errorf("ingest: %s: apply: %w", it.id, err)
 	}
 
@@ -223,10 +224,10 @@ func (b *Builder) dropFrom(key, id string) ports.Op {
 	return ports.Remove(key, id)
 }
 
-func (b *Builder) prune(seen map[string]int, rep *Report) error {
+func (b *Builder) prune(ctx context.Context, seen map[string]int, rep *Report) error {
 	entity := b.m.Entity
 
-	ids, err := b.store.Members(keyspace.Universe(entity))
+	ids, err := b.store.Members(ctx, keyspace.Universe(entity))
 	if err != nil {
 		return fmt.Errorf("ingest: prune: read universe: %w", err)
 	}
@@ -237,7 +238,7 @@ func (b *Builder) prune(seen map[string]int, rep *Report) error {
 			continue
 		}
 		rev := keyspace.Memberships(entity, id)
-		memberOf, err := b.store.Members(rev)
+		memberOf, err := b.store.Members(ctx, rev)
 		if err != nil {
 			return fmt.Errorf("ingest: prune %s: %w", id, err)
 		}
@@ -248,7 +249,7 @@ func (b *Builder) prune(seen map[string]int, rep *Report) error {
 		}
 		ops = append(ops, ports.DeleteKey(rev), ports.DelDoc(entity, id))
 
-		if err := b.store.Apply(ops...); err != nil {
+		if err := b.store.Apply(ctx, ops...); err != nil {
 			return fmt.Errorf("ingest: prune %s: %w", id, err)
 		}
 		rep.Pruned++

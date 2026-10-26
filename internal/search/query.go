@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -45,13 +46,13 @@ type Result struct {
 }
 
 // Match returns every matching ID, unordered.
-func Match(store ports.SetStore, q Query) ([]string, error) {
+func Match(ctx context.Context, store ports.SetStore, q Query) ([]string, error) {
 	if q.Entity == "" {
 		return nil, errors.New("search: query needs an entity")
 	}
 
 	var temps []string
-	defer func() { _ = store.Delete(temps...) }()
+	defer func() { ports.DeleteDetached(ctx, store, temps...) }()
 	temp := func() string {
 		k := q.Entity + ":_tmp:" + rand.Text()
 		temps = append(temps, k)
@@ -71,7 +72,7 @@ func Match(store ports.SetStore, q Query) ([]string, error) {
 			return keys[0], true, nil
 		}
 		tmp := temp()
-		if err := store.UnionStore(tmp, keys...); err != nil {
+		if err := store.UnionStore(ctx, tmp, keys...); err != nil {
 			return "", false, fmt.Errorf("search: union for %q: %w", f.Path, err)
 		}
 		return tmp, true, nil
@@ -95,12 +96,12 @@ func Match(store ports.SetStore, q Query) ([]string, error) {
 		if r.Max != nil {
 			hi = *r.Max
 		}
-		ids, err := store.RangeByScore(keyspace.Range(q.Entity, r.Path), lo, hi)
+		ids, err := store.RangeByScore(ctx, keyspace.Range(q.Entity, r.Path), lo, hi)
 		if err != nil {
 			return nil, fmt.Errorf("search: range %q: %w", r.Path, err)
 		}
 		tmp := temp()
-		if err := store.AddToSet(tmp, ids...); err != nil {
+		if err := store.AddToSet(ctx, tmp, ids...); err != nil {
 			return nil, fmt.Errorf("search: range %q: %w", r.Path, err)
 		}
 		positive = append(positive, tmp)
@@ -120,38 +121,38 @@ func Match(store ports.SetStore, q Query) ([]string, error) {
 		}
 	}
 	if len(negative) == 0 {
-		return store.Intersect(positive...)
+		return store.Intersect(ctx, positive...)
 	}
 
 	matched := temp()
-	if err := store.IntersectStore(matched, positive...); err != nil {
+	if err := store.IntersectStore(ctx, matched, positive...); err != nil {
 		return nil, fmt.Errorf("search: intersect: %w", err)
 	}
-	return store.Difference(append([]string{matched}, negative...)...)
+	return store.Difference(ctx, append([]string{matched}, negative...)...)
 }
 
 // Find runs Match, then orders and pages the result.
-func Find(store ports.SetStore, q Query) (Result, error) {
+func Find(ctx context.Context, store ports.SetStore, q Query) (Result, error) {
 	if err := checkPaging(q); err != nil {
 		return Result{}, err
 	}
-	ids, err := Match(store, q)
+	ids, err := Match(ctx, store, q)
 	if err != nil {
 		return Result{}, err
 	}
-	return Page(store, q, ids)
+	return Page(ctx, store, q, ids)
 }
 
 // Page applies q's Sort, Offset and Limit to ids from Match, reordering ids in
 // place. Without a Sort, IDs are ordered by string comparison so pages stay stable.
-func Page(store ports.SetStore, q Query, ids []string) (Result, error) {
+func Page(ctx context.Context, store ports.SetStore, q Query, ids []string) (Result, error) {
 	if err := checkPaging(q); err != nil {
 		return Result{}, err
 	}
 	res := Result{Total: len(ids)}
 
 	if q.Sort != nil {
-		scores, err := store.Scores(keyspace.Range(q.Entity, q.Sort.Path), ids...)
+		scores, err := store.Scores(ctx, keyspace.Range(q.Entity, q.Sort.Path), ids...)
 		if err != nil {
 			return Result{}, fmt.Errorf("search: sort %q: %w", q.Sort.Path, err)
 		}

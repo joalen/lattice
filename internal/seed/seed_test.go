@@ -62,7 +62,7 @@ func TestMappingIndexesGeneratedItems(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep, err := b.Ingest(seed.JSON(seed.Items(500, 3)), ingest.Options{})
+	rep, err := b.Ingest(t.Context(), seed.JSON(seed.Items(500, 3)), ingest.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,16 +70,16 @@ func TestMappingIndexesGeneratedItems(t *testing.T) {
 		t.Fatalf("report = %+v", rep)
 	}
 
-	if n, _ := store.Cardinality(keyspace.Universe(seed.Entity)); n != 500 {
+	if n, _ := store.Cardinality(t.Context(), keyspace.Universe(seed.Entity)); n != 500 {
 		t.Errorf("universe = %d", n)
 	}
 	for _, path := range []string{"year", "score"} {
-		ids, _ := store.RangeByScore(keyspace.Range(seed.Entity, path), -1, 1e9)
+		ids, _ := store.RangeByScore(t.Context(), keyspace.Range(seed.Entity, path), -1, 1e9)
 		if len(ids) != 500 {
 			t.Errorf("%s index holds %d items", path, len(ids))
 		}
 	}
-	keys, _ := store.Keys(keyspace.FacetPrefix(seed.Entity, "owner.team"))
+	keys, _ := store.Keys(t.Context(), keyspace.FacetPrefix(seed.Entity, "owner.team"))
 	if len(keys) == 0 || !strings.HasPrefix(keys[0], "item:owner.team:team-") {
 		t.Errorf("nested path not indexed: %v", keys)
 	}
