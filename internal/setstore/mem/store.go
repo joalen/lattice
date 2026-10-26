@@ -47,6 +47,17 @@ func (s *Store) Members(setKey string) ([]string, error) {
 }
 
 // Cardinality returns the count of all distinct elements in a setKey (from set theory)
+func (s *Store) MembersMulti(setKeys ...string) (map[string][]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[string][]string, len(setKeys))
+	for _, k := range setKeys {
+		out[k] = keys(s.sets[k])
+	}
+	return out, nil
+}
+
 func (s *Store) Cardinality(setKey string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

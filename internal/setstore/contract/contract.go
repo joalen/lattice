@@ -1,3 +1,4 @@
+// Package contract is a behavior suite every ports.SetStore adapter must pass.
 package contract
 
 import (
@@ -26,6 +27,8 @@ func Run(t *testing.T, newStore Factory) {
 		{"AddToSet with no members is a no-op", addNoMembers},
 		{"Cardinality of a missing key is zero", cardinalityMissing},
 		{"Members", members},
+		{"MembersMulti", membersMulti},
+		{"Batches larger than one pipeline", largeBatches},
 		{"Intersect", intersect},
 		{"Intersect with a missing key is empty", intersectMissing},
 		{"Intersect with no keys errors", intersectNoKeys},
@@ -122,6 +125,59 @@ func members(t *testing.T, s ports.SetStore) {
 }
 
 // Add then Remove on one key nets to a removal; ingest relies on this when moving a document between facets.
+func membersMulti(t *testing.T, s ports.SetStore) {
+	mustAdd(t, s, "a", "1", "2")
+	mustAdd(t, s, "b", "3")
+
+	got, err := s.MembersMulti("a", "b", "ghost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got keys %v, want a, b and ghost", got)
+	}
+	assertMembers(t, got["a"], "1", "2")
+	assertMembers(t, got["b"], "3")
+	assertMembers(t, got["ghost"])
+
+	if got, err := s.MembersMulti(); err != nil || len(got) != 0 {
+		t.Fatalf("no keys: %v, %v", got, err)
+	}
+}
+
+func largeBatches(t *testing.T, s ports.SetStore) {
+	const n = 2500
+	setKeys := make([]string, n)
+	members := make([]string, n)
+	ops := make([]ports.Op, 0, 2*n)
+	for i := 0; i < n; i++ {
+		setKeys[i] = "set" + strconv.Itoa(i)
+		members[i] = "m" + strconv.Itoa(i)
+		ops = append(ops, ports.Add(setKeys[i], members[i]), ports.SetScore("z", members[i], float64(i)))
+	}
+	if err := s.Apply(ops...); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.MembersMulti(setKeys...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, k := range setKeys {
+		if len(got[k]) != 1 || got[k][0] != members[i] {
+			t.Fatalf("MembersMulti[%s] = %v, want [%s]", k, got[k], members[i])
+		}
+	}
+
+	scores, err := s.Scores("z", append(members, "nobody")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scores) != n || scores["m0"] != 0 || scores["m2499"] != 2499 {
+		t.Fatalf("Scores returned %d entries, m0=%v m2499=%v", len(scores), scores["m0"], scores["m2499"])
+	}
+}
+
 func applyInOrder(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "stale", "1", "2")
 

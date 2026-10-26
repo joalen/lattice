@@ -1,3 +1,4 @@
+// Package redis implements ports.SetStore on Redis or Valkey.
 package redis
 
 import (
@@ -49,7 +50,10 @@ func (s *Store) ks(keys []string) []string {
 }
 
 // docNS keeps documents from colliding with set keys (WRONGTYPE) in the shared keyspace.
-const docNS = "_doc:"
+const (
+	docNS         = "_doc:"
+	pipelineChunk = 1000
+)
 
 func (s *Store) docKey(entity, id string) string {
 	return s.prefix + docNS + entity + ":" + id
@@ -186,28 +190,49 @@ func (s *Store) RangeByScore(key string, min, max float64) ([]string, error) {
 
 func (s *Store) Scores(key string, members ...string) (map[string]float64, error) {
 	out := make(map[string]float64, len(members))
-	if len(members) == 0 {
-		return out, nil
-	}
-
 	ctx := s.ctx()
-	pipe := s.rdb.Pipeline()
-	cmds := make([]*goredis.FloatCmd, len(members))
-	for i, m := range members {
-		cmds[i] = pipe.ZScore(ctx, s.k(key), m)
-	}
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) {
-		return nil, fmt.Errorf("redis: ZSCORE %q: %w", key, err)
-	}
-	for i, c := range cmds {
-		score, err := c.Result()
-		if errors.Is(err, goredis.Nil) {
-			continue
+
+	for start := 0; start < len(members); start += pipelineChunk {
+		batch := members[start:min(start+pipelineChunk, len(members))]
+		pipe := s.rdb.Pipeline()
+		cmds := make([]*goredis.FloatCmd, len(batch))
+		for i, m := range batch {
+			cmds[i] = pipe.ZScore(ctx, s.k(key), m)
 		}
-		if err != nil {
+		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) {
 			return nil, fmt.Errorf("redis: ZSCORE %q: %w", key, err)
 		}
-		out[members[i]] = score
+		for i, c := range cmds {
+			score, err := c.Result()
+			if errors.Is(err, goredis.Nil) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("redis: ZSCORE %q: %w", key, err)
+			}
+			out[batch[i]] = score
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) MembersMulti(setKeys ...string) (map[string][]string, error) {
+	out := make(map[string][]string, len(setKeys))
+	ctx := s.ctx()
+
+	for start := 0; start < len(setKeys); start += pipelineChunk {
+		batch := setKeys[start:min(start+pipelineChunk, len(setKeys))]
+		pipe := s.rdb.Pipeline()
+		cmds := make([]*goredis.StringSliceCmd, len(batch))
+		for i, k := range batch {
+			cmds[i] = pipe.SMembers(ctx, s.k(k))
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return nil, fmt.Errorf("redis: SMEMBERS batch: %w", err)
+		}
+		for i, c := range cmds {
+			out[batch[i]] = c.Val()
+		}
 	}
 	return out, nil
 }
