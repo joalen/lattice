@@ -198,6 +198,9 @@ func TestIngest_FailsFastWithoutPartialWrites(t *testing.T) {
 			if n, _ := store.Cardinality(keyspace.Universe("user")); n != 0 {
 				t.Errorf("nothing should have been written, universe has %d", n)
 			}
+			if _, err := ingest.LoadMapping(store, "user"); !errors.Is(err, ports.ErrNotFound) {
+				t.Errorf("mapping saved despite failure: %v", err)
+			}
 		})
 	}
 }
@@ -295,5 +298,26 @@ func TestIngest_RangeValueMustBeANumber(t *testing.T) {
 	}
 	if n, _ := store.Cardinality(keyspace.Universe("user")); n != 0 {
 		t.Errorf("nothing should have been written, universe has %d", n)
+	}
+}
+
+func TestIngest_PersistsMapping(t *testing.T) {
+	store := mem.New()
+	docs := mustDocs(t, users)
+	b := newBuilder(t, store, docs)
+
+	if _, err := ingest.LoadMapping(store, "user"); !errors.Is(err, ports.ErrNotFound) {
+		t.Fatalf("before ingest: got %v, want ErrNotFound", err)
+	}
+	if _, err := b.Ingest(docs, ingest.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ingest.LoadMapping(store, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := ingest.ProposeMapping("user", docs, ingest.ProposeOptions{})
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("loaded %+v, want %+v", got, want)
 	}
 }

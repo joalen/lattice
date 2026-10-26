@@ -19,13 +19,13 @@ type Options struct {
 }
 
 type Report struct {
-	Docs        int
-	Created     int
-	Updated     int
-	Unchanged   int
-	Pruned      int
-	KeysAdded   int
-	KeysRemoved int
+	Docs        int `json:"docs"`
+	Created     int `json:"created"`
+	Updated     int `json:"updated"`
+	Unchanged   int `json:"unchanged"`
+	Pruned      int `json:"pruned"`
+	KeysAdded   int `json:"keys_added"`
+	KeysRemoved int `json:"keys_removed"`
 }
 
 type Builder struct {
@@ -85,6 +85,10 @@ func (b *Builder) Ingest(docs []json.RawMessage, opts Options) (Report, error) {
 			return rep, fmt.Errorf("ingest: document %d: %w", i, err)
 		}
 		items = append(items, prepared{id: id, raw: raw, keys: keys, scores: scores})
+	}
+
+	if err := SaveMapping(b.store, b.m); err != nil {
+		return rep, fmt.Errorf("ingest: save mapping: %w", err)
 	}
 
 	for _, it := range items {

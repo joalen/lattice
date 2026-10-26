@@ -1,10 +1,13 @@
 package ingest
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/joalen/lattice/internal/ports"
 )
 
 type IndexType string
@@ -51,4 +54,26 @@ func ParseMapping(r io.Reader) (Mapping, error) {
 
 func (m Mapping) JSON() ([]byte, error) {
 	return json.MarshalIndent(m, "", "  ")
+}
+
+// metaEntity cannot collide with a real entity because Validate rejects names starting with "_".
+const metaEntity = "_mapping"
+
+// SaveMapping records the mapping an entity was indexed with, so queries can
+// tell an unindexed field from a field with no matches.
+func SaveMapping(store ports.SetStore, m Mapping) error {
+	data, err := m.JSON()
+	if err != nil {
+		return err
+	}
+	return store.PutDocument(metaEntity, m.Entity, data)
+}
+
+// LoadMapping returns an error wrapping ports.ErrNotFound if the entity was never ingested.
+func LoadMapping(store ports.SetStore, entity string) (Mapping, error) {
+	raw, err := store.GetDocument(metaEntity, entity)
+	if err != nil {
+		return Mapping{}, fmt.Errorf("mapping for entity %q: %w", entity, err)
+	}
+	return ParseMapping(bytes.NewReader(raw))
 }
