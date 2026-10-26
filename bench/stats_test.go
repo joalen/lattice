@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,7 +64,39 @@ func TestPickMany(t *testing.T) {
 	}
 }
 
-// Needs a Redis; counts what a pipeline, a transaction and a plain command each cost.
+// seenHook records command names so a wrong count can be explained.
+type seenHook struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (h *seenHook) DialHook(next goredis.DialHook) goredis.DialHook { return next }
+
+func (h *seenHook) ProcessHook(next goredis.ProcessHook) goredis.ProcessHook {
+	return func(ctx context.Context, cmd goredis.Cmder) error {
+		h.record(cmd.Name())
+		return next(ctx, cmd)
+	}
+}
+
+func (h *seenHook) ProcessPipelineHook(next goredis.ProcessPipelineHook) goredis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []goredis.Cmder) error {
+		names := make([]string, len(cmds))
+		for i, c := range cmds {
+			names[i] = c.Name()
+		}
+		h.record("[" + strings.Join(names, " ") + "]")
+		return next(ctx, cmds)
+	}
+}
+
+func (h *seenHook) record(s string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.names = append(h.names, s)
+}
+
+// Needs Redis; counts what a pipeline, a transaction and a plain command each cost.
 func TestTripCounter(t *testing.T) {
 	addr := os.Getenv("LATTICE_REDIS_ADDR")
 	if addr == "" {
@@ -76,19 +110,30 @@ func TestTripCounter(t *testing.T) {
 	}
 
 	c := &tripCounter{}
+	seen := &seenHook{}
 	rdb.AddHook(c)
+	rdb.AddHook(seen)
+
+	run := func() {
+		rdb.Get(ctx, "lattice-bench-trip-test")
+		p := rdb.Pipeline()
+		p.Get(ctx, "lattice-bench-trip-test")
+		p.Get(ctx, "lattice-bench-trip-test")
+		_, _ = p.Exec(ctx)
+		tx := rdb.TxPipeline()
+		tx.Get(ctx, "lattice-bench-trip-test")
+		tx.Get(ctx, "lattice-bench-trip-test")
+		_, _ = tx.Exec(ctx)
+	}
+
+	run()
 	before := c.now()
-	rdb.Get(ctx, "lattice-bench-trip-test")
-	p := rdb.Pipeline()
-	p.Get(ctx, "lattice-bench-trip-test")
-	p.Get(ctx, "lattice-bench-trip-test")
-	_, _ = p.Exec(ctx)
-	tx := rdb.TxPipeline()
-	tx.Get(ctx, "lattice-bench-trip-test")
-	tx.Get(ctx, "lattice-bench-trip-test")
-	_, _ = tx.Exec(ctx)
+	seen.mu.Lock()
+	seen.names = nil
+	seen.mu.Unlock()
+	run()
 
 	if got := c.now() - before; got != 3 {
-		t.Errorf("one command + one pipeline + one transaction counted %d round trips, want 3", got)
+		t.Errorf("one command + one pipeline + one transaction counted %d round trips, want 3; hooks saw %v", got, seen.names)
 	}
 }
