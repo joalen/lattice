@@ -64,7 +64,6 @@ Why this might break is because the keys are heterogeneous, where you have "2026
 - **Cánovas Izquierdo & Cabot, "Discovering Implicit Schemas in JSON Data" (ICWE 2013).** Proposed an iterative schema-merging technique: infer a schema from one document, then progressively fold in schemas from subsequent documents, refining unions and optionality incrementally rather than requiring a full-corpus pass upfront. That incremental-merge idea is what I had in mind for a goal on creating an idempotent re-ingestion system (diff and update indexes as source files change, rather than a full flush) is aiming for. Rather than full path-based schemas, we just apply to structural signatures.
 - **Veinhardt Latták & Koupil, "A Comparative Analysis of JSON Schema Inference Algorithms" (ENASE 2022).** An independent, author-unaffiliated comparison of five approaches (including the three above, plus Sevilla et al. 2015 and Frozza et al. 2018), evaluated on both feature support and measured runtime across corpora from 1k to 128k documents. Its most load-bearing finding for this project: as of that survey, none of the five studied approaches can correctly infer **maps/dictionaries** as a distinct type, because a map's key is part of the actual *data*, not schema metadata, and every approach studied treats keys as structural information. That's an explicit, citable statement of exactly the problem this project's original dataset ran into: a requirement tree where section titles live in key position *are* the data, not the schema, which breaks every path-based approach in the survey by design rather than by implementation gap.
 
-
 ---
 
 ## Architecture: hexagonal (ports & adapters)
@@ -76,20 +75,24 @@ The core rule: **business logic doesn't know Redis exists.** Domain types and qu
 ```sh
 lattice/
 ├── go.mod
-├── main.go                  # composition root: wires adapters into the domain
+├── cmd/lattice/             # composition root: wires the Redis adapter into the CLI
 ├── internal/
-│   ├── domain/              # core types (Document, etc). Zero deps on Redis/HTTP.
-│   ├── ports/               # interfaces the domain needs (SetStore, ...)
+│   ├── cli/                 # commands: discover, propose, ingest, search, get, similar
+│   ├── domain/              # core types
+│   ├── ports/               # SetStore interface and Op
 │   ├── setstore/
-│   │   ├── mem/             # in-memory fake adapter
-│   │   └── redis/           # real Redis/Valkey adapter
-│   ├── search/              # filter DSL -> set ops
-│   ├── facets/              # facet count computation 
-│   ├── similarity/          # Jaccard similarity scoring
-│   ├── ingest/              # generic JSON discovery + structural signatures
-│   ├── api/                 # HTTP handlers
-│   └── seed/                # test data generator
-└── bench/                   # perf benchmarks
+│   │   ├── contract/        # behavior suite every adapter must pass
+│   │   ├── mem/             # in-memory adapter
+│   │   └── redis/           # Redis/Valkey adapter
+│   ├── keyspace/            # the one place index keys are spelled
+│   ├── ingest/              # flatten, discovery, mapping, idempotent index builder
+│   ├── search/              # filters, ranges, NOT, sort, pagination
+│   ├── facets/              # facet counts
+│   ├── similarity/          # Jaccard similarity
+│   ├── seed/                # synthetic data generator
+│   └── fixture/             # small shared test dataset
+├── bench/                   # benchmark harness (go run ./bench)
+└── docs/
 ```
 
 ---
@@ -108,9 +111,38 @@ This is deliberate: if "domain-agnostic ingestion" only actually works on data s
 
 ```bash
 brew install go redis
-brew services start redis
+brew services start redis     # Redis 7.0+ or Valkey 7.2+ (SINTERCARD)
 
 git clone https://github.com/joalen/lattice
 cd lattice
-go run main.go
+go build -o lattice ./cmd/lattice
+go test -race ./...
+LATTICE_REDIS_ADDR=localhost:6379 LATTICE_REQUIRE_REDIS=1 go test ./...   # also runs the Redis adapter tests
 ```
+
+## Usage
+```sh
+lattice discover ./data # which shapes recur, ignoring key names
+lattice propose --entity plan ./data > mapping.json # proposed field mapping; edit it, then:
+lattice ingest --mapping mapping.json ./data # idempotent: re-run it as files change
+
+lattice search --entity plan \
+  --facet major=computer_science,mathematics --facet degree_type=bs \
+  --not department=business --range total_credits=120..128 \
+  --sort total_credits --limit 20 --facets department,degree_type
+lattice get --entity plan 42
+lattice similar --entity plan --limit 5 42
+```
+
+propose treats a string field as a facet only if it has at most 30 distinct values that repeat; pass --max-categorical N for fields like major.
+
+Everything prints JSON. search returns IDs with a short summary (top-level scalar fields, long strings cut off) so a CLI agent can decide what to fetch; get returns the full document. Connection settings: --redis / LATTICE_REDIS_ADDR and --prefix / LATTICE_PREFIX.
+
+## Benchmark and Performance
+To test out the benchmark of this, run:
+```sh
+redis-server --port 6379 &
+go run ./bench -out docs/benchmarks.md
+```
+
+This runs 300, 10K, 100K synthetic documents on Redis and the in-memory adapter (roughly 10 minutes), measuring p50/p95/p99 and Redis round trips for each operation plus some milestone goals of SINTERSTORE-vs-in-app and ZRANGE-vs-SORT comparisons. To get a faster run, try `-sizes 300,10000`
