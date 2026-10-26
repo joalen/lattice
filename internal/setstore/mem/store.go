@@ -104,6 +104,28 @@ func (s *Store) Difference(setKeys ...string) ([]string, error) {
 	return keys(result), nil
 }
 
+func (s *Store) UnionStore(dest string, setKeys ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]struct{})
+	for _, key := range setKeys {
+		for m := range s.sets[key] {
+			out[m] = struct{}{}
+		}
+	}
+	s.sets[dest] = out
+	return nil
+}
+
+func (s *Store) Delete(keys ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, k := range keys {
+		delete(s.sets, k)
+	}
+	return nil
+}
+
 func (s *Store) PutDocument(entity, id string, raw []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
