@@ -7,6 +7,7 @@ var ErrNotFound = errors.New("not found")
 type SetStore interface {
 	AddToSet(setKey string, members ...string) error
 	Members(setKey string) ([]string, error)
+	MembersMulti(setKeys ...string) (map[string][]string, error)
 	Intersect(setKeys ...string) ([]string, error)
 	Union(setKeys ...string) ([]string, error)
 	Difference(setKeys ...string) ([]string, error)

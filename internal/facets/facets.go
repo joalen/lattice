@@ -13,8 +13,8 @@ import (
 // Count is how many of the given documents have Value. Value is the normalized
 // form stored in the key, so "Computer Science" comes back as "computer_science".
 type Count struct {
-	Value string
-	N     int
+	Value string `json:"value"`
+	N     int    `json:"count"`
 }
 
 // Counts reports, for each path, the values present among ids and how many of

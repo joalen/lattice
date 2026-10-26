@@ -42,17 +42,25 @@ func Jaccard(a, b map[string]struct{}) float64 {
 
 // Similar ranks other documents by Jaccard similarity of their facet sets to id's.
 func Similar(store ports.SetStore, entity, id string, opts Options) ([]Match, error) {
-	target, err := features(store, entity, id, opts.Paths)
+	own, err := store.Members(keyspace.Memberships(entity, id))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("similarity: %w", err)
 	}
+	if len(own) == 0 {
+		return nil, fmt.Errorf("similarity: document %q: %w", id, ports.ErrNotFound)
+	}
+	target := facetSet(entity, own, opts.Paths)
 
+	targetKeys := make([]string, 0, len(target))
+	for k := range target {
+		targetKeys = append(targetKeys, k)
+	}
+	lists, err := store.MembersMulti(targetKeys...)
+	if err != nil {
+		return nil, fmt.Errorf("similarity: %w", err)
+	}
 	shared := make(map[string]int)
-	for key := range target {
-		members, err := store.Members(key)
-		if err != nil {
-			return nil, fmt.Errorf("similarity: %w", err)
-		}
+	for _, members := range lists {
 		for _, other := range members {
 			if other != id {
 				shared[other]++
@@ -60,13 +68,21 @@ func Similar(store ports.SetStore, entity, id string, opts Options) ([]Match, er
 		}
 	}
 
-	matches := make([]Match, 0, len(shared))
-	for other, n := range shared {
-		theirs, err := features(store, entity, other, opts.Paths)
-		if err != nil {
-			return nil, err
-		}
-		matches = append(matches, Match{ID: other, Score: Jaccard(target, theirs), Shared: n})
+	candidates := make([]string, 0, len(shared))
+	memberKeys := make([]string, 0, len(shared))
+	for other := range shared {
+		candidates = append(candidates, other)
+		memberKeys = append(memberKeys, keyspace.Memberships(entity, other))
+	}
+	theirs, err := store.MembersMulti(memberKeys...)
+	if err != nil {
+		return nil, fmt.Errorf("similarity: %w", err)
+	}
+
+	matches := make([]Match, len(candidates))
+	for i, other := range candidates {
+		score := Jaccard(target, facetSet(entity, theirs[memberKeys[i]], opts.Paths))
+		matches[i] = Match{ID: other, Score: score, Shared: shared[other]}
 	}
 
 	sort.Slice(matches, func(i, j int) bool {
@@ -81,22 +97,14 @@ func Similar(store ports.SetStore, entity, id string, opts Options) ([]Match, er
 	return matches, nil
 }
 
-func features(store ports.SetStore, entity, id string, paths []string) (map[string]struct{}, error) {
-	keys, err := store.Members(keyspace.Memberships(entity, id))
-	if err != nil {
-		return nil, fmt.Errorf("similarity: %w", err)
-	}
-	if len(keys) == 0 {
-		return nil, fmt.Errorf("similarity: document %q: %w", id, ports.ErrNotFound)
-	}
-
+func facetSet(entity string, keys []string, paths []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
 		if keyspace.IsFacet(entity, k) && inPaths(entity, k, paths) {
 			out[k] = struct{}{}
 		}
 	}
-	return out, nil
+	return out
 }
 
 func inPaths(entity, key string, paths []string) bool {

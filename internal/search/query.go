@@ -130,15 +130,22 @@ func Match(store ports.SetStore, q Query) ([]string, error) {
 	return store.Difference(append([]string{matched}, negative...)...)
 }
 
-// Find runs Match, then orders and pages the result. Without a Sort, IDs are
-// ordered by string comparison so pages stay stable.
+// Find runs Match, then orders and pages the result.
 func Find(store ports.SetStore, q Query) (Result, error) {
-	if q.Offset < 0 || q.Limit < 0 {
-		return Result{}, errors.New("search: offset and limit must not be negative")
+	if err := checkPaging(q); err != nil {
+		return Result{}, err
 	}
-
 	ids, err := Match(store, q)
 	if err != nil {
+		return Result{}, err
+	}
+	return Page(store, q, ids)
+}
+
+// Page applies q's Sort, Offset and Limit to ids from Match, reordering ids in
+// place. Without a Sort, IDs are ordered by string comparison so pages stay stable.
+func Page(store ports.SetStore, q Query, ids []string) (Result, error) {
+	if err := checkPaging(q); err != nil {
 		return Result{}, err
 	}
 	res := Result{Total: len(ids)}
@@ -173,4 +180,11 @@ func Find(store ports.SetStore, q Query) (Result, error) {
 	}
 	res.IDs = ids
 	return res, nil
+}
+
+func checkPaging(q Query) error {
+	if q.Offset < 0 || q.Limit < 0 {
+		return errors.New("search: offset and limit must not be negative")
+	}
+	return nil
 }
