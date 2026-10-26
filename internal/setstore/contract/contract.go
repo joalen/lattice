@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"errors"
 	"reflect"
 	"sort"
 	"strconv"
@@ -10,7 +11,6 @@ import (
 	"github.com/joalen/lattice/internal/ports"
 )
 
-// Factory returns a fresh, empty store
 type Factory func(t *testing.T) ports.SetStore
 
 // Run executes the whole suite against stores produced by newStore.
@@ -24,6 +24,7 @@ func Run(t *testing.T, newStore Factory) {
 		{"AddToSet is idempotent", addIdempotent},
 		{"AddToSet with no members is a no-op", addNoMembers},
 		{"Cardinality of a missing key is zero", cardinalityMissing},
+		{"Members", members},
 		{"Intersect", intersect},
 		{"Intersect with a missing key is empty", intersectMissing},
 		{"Intersect with no keys errors", intersectNoKeys},
@@ -33,6 +34,9 @@ func Run(t *testing.T, newStore Factory) {
 		{"Difference with no keys errors", differenceNoKeys},
 		{"UnionStore materializes and overwrites", unionStore},
 		{"Delete removes sets and tolerates missing keys", deleteKeys},
+		{"Apply runs ops in order", applyInOrder},
+		{"Apply with documents and empty ops", applyDocsAndEmpty},
+		{"Apply rejects an invalid op without applying any", applyInvalid},
 		{"Documents round-trip", docRoundTrip},
 		{"Documents: missing is an error, entities are isolated", docMissingAndIsolation},
 		{"Set-theory laws hold", setLaws},
@@ -46,7 +50,6 @@ func Run(t *testing.T, newStore Factory) {
 	}
 }
 
-// Sets are unordered (in Go maps and in Redis), so every comparison sorts first.
 func sorted(in []string) []string {
 	out := append([]string{}, in...)
 	sort.Strings(out)
@@ -95,6 +98,89 @@ func addNoMembers(t *testing.T, s ports.SetStore) {
 
 func cardinalityMissing(t *testing.T, s ports.SetStore) {
 	assertCard(t, s, "nope", 0)
+}
+
+func members(t *testing.T, s ports.SetStore) {
+	got, err := s.Members("ghost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMembers(t, got) // missing key is the empty set, not an error
+
+	mustAdd(t, s, "a", "1", "2", "2", "3")
+	got, err = s.Members("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMembers(t, got, "1", "2", "3")
+}
+
+// Ops run in the order given, so Add-then-Remove on one key nets to a removal.
+func applyInOrder(t *testing.T, s ports.SetStore) {
+	mustAdd(t, s, "stale", "1", "2")
+
+	err := s.Apply(
+		ports.Add("fresh", "1", "2", "3"),
+		ports.Remove("fresh", "3"),
+		ports.Remove("stale", "1"),
+		ports.Add("stale", "9"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Members("fresh")
+	assertMembers(t, got, "1", "2")
+	got, _ = s.Members("stale")
+	assertMembers(t, got, "2", "9")
+
+	// Removing the last member empties the set.
+	if err := s.Apply(ports.Remove("fresh", "1", "2")); err != nil {
+		t.Fatal(err)
+	}
+	assertCard(t, s, "fresh", 0)
+
+	if err := s.Apply(ports.DeleteKey("stale")); err != nil {
+		t.Fatal(err)
+	}
+	assertCard(t, s, "stale", 0)
+}
+
+func applyDocsAndEmpty(t *testing.T, s ports.SetStore) {
+	if err := s.Apply(); err != nil {
+		t.Fatalf("Apply with no ops should be a no-op: %v", err)
+	}
+	if err := s.Apply(ports.Add("a"), ports.Remove("a")); err != nil {
+		t.Fatalf("ops with empty member lists should be no-ops: %v", err)
+	}
+
+	if err := s.Apply(ports.PutDoc("plan", "1", []byte(`{"x":1}`)), ports.Add("idx", "1")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetDocument("plan", "1")
+	if err != nil || string(got) != `{"x":1}` {
+		t.Fatalf("PutDoc via Apply: got %q, %v", got, err)
+	}
+	assertCard(t, s, "idx", 1)
+
+	if err := s.Apply(ports.DelDoc("plan", "1"), ports.DelDoc("plan", "never-existed")); err != nil {
+		t.Fatalf("DelDoc should tolerate missing documents: %v", err)
+	}
+	if _, err := s.GetDocument("plan", "1"); !errors.Is(err, ports.ErrNotFound) {
+		t.Fatalf("after DelDoc: got %v, want ErrNotFound", err)
+	}
+}
+
+// All-or-nothing validation: a bad op anywhere in the batch must mean nothing in the batch is applied.
+func applyInvalid(t *testing.T, s ports.SetStore) {
+	err := s.Apply(
+		ports.Add("x", "1"),
+		ports.Op{}, // zero value: no kind
+	)
+	if err == nil {
+		t.Fatal("expected an error for an invalid op")
+	}
+	assertCard(t, s, "x", 0)
 }
 
 func intersect(t *testing.T, s ports.SetStore) {
@@ -212,7 +298,8 @@ func unionStore(t *testing.T, s ports.SetStore) {
 	}
 	assertCard(t, s, "dst", 3)
 
-	// Overwrite, not append.
+	// Overwrite, not append. This is the exact property whose absence caused
+	// the stale tmp:query:1 leak in search.Find.
 	if err := s.UnionStore("dst", "a"); err != nil {
 		t.Fatal(err)
 	}
@@ -265,18 +352,20 @@ func docRoundTrip(t *testing.T, s ports.SetStore) {
 }
 
 func docMissingAndIsolation(t *testing.T, s ports.SetStore) {
-	if _, err := s.GetDocument("plan", "404"); err == nil {
-		t.Fatal("expected an error for a missing document")
+	_, err := s.GetDocument("plan", "404")
+	if !errors.Is(err, ports.ErrNotFound) {
+		t.Fatalf("missing document: got %v, want an error wrapping ports.ErrNotFound", err)
 	}
 
 	if err := s.PutDocument("plan", "1", []byte(`"plan-one"`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetDocument("course", "1"); err == nil {
+	if _, err := s.GetDocument("course", "1"); !errors.Is(err, ports.ErrNotFound) {
 		t.Fatal("same id under a different entity must not collide")
 	}
 }
 
+// The reason the project exists: the port should obey the laws of set theory.
 func setLaws(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1", "2", "3", "4")
 	mustAdd(t, s, "b", "3", "4", "5")
@@ -295,7 +384,7 @@ func setLaws(t *testing.T, s ports.SetStore) {
 		t.Fatalf("partition of A∪B violated: %d + %d + %d != %d",
 			len(aMinusB), len(i), len(bMinusA), len(u))
 	}
-	// Jaccard = |A ∩ B| / |A ∪ B|
+	// Jaccard = |A ∩ B| / |A ∪ B| (used later by similarity).
 	if got, want := float64(len(i))/float64(len(u)), 0.4; got != want {
 		t.Fatalf("jaccard = %v, want %v", got, want)
 	}
