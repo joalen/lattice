@@ -2,10 +2,6 @@ package ports
 
 import "errors"
 
-// ErrNotFound is returned (wrapped) when a requested document does not exist.
-// Callers test for it with errors.Is(err, ports.ErrNotFound), which lets them
-// tell "missing" apart from "the backend is down" without importing any
-// adapter package.
 var ErrNotFound = errors.New("not found")
 
 type SetStore interface {
@@ -18,10 +14,19 @@ type SetStore interface {
 
 	// Store variants keep the work server-side (SUNIONSTORE / SINTERSTORE in Redis)
 	UnionStore(dest string, setKeys ...string) error
+	IntersectStore(dest string, setKeys ...string) error
+	IntersectCard(setKeys ...string) (int, error)
 	Delete(keys ...string) error
 
-	// Apply runs the ops in order as one atomic unit: every op is validated
-	// first, and if any is invalid nothing is applied.
+	// Keys lists set and sorted-set keys that start with prefix.
+	Keys(prefix string) ([]string, error)
+
+	// RangeByScore returns members with min <= score <= max, ascending by score then member.
+	RangeByScore(key string, min, max float64) ([]string, error)
+	// Scores omits members that have no score under key.
+	Scores(key string, members ...string) (map[string]float64, error)
+
+	// Apply runs ops in order, all or nothing: any invalid op rejects the whole batch.
 	Apply(ops ...Op) error
 
 	PutDocument(entity, id string, raw []byte) error

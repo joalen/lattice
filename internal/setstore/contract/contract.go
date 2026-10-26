@@ -2,6 +2,7 @@ package contract
 
 import (
 	"errors"
+	"math"
 	"reflect"
 	"sort"
 	"strconv"
@@ -11,9 +12,9 @@ import (
 	"github.com/joalen/lattice/internal/ports"
 )
 
+// Factory returns an isolated, empty store.
 type Factory func(t *testing.T) ports.SetStore
 
-// Run executes the whole suite against stores produced by newStore.
 func Run(t *testing.T, newStore Factory) {
 	t.Helper()
 
@@ -33,7 +34,12 @@ func Run(t *testing.T, newStore Factory) {
 		{"Difference", difference},
 		{"Difference with no keys errors", differenceNoKeys},
 		{"UnionStore materializes and overwrites", unionStore},
+		{"IntersectStore materializes and overwrites", intersectStore},
+		{"IntersectCard", intersectCard},
 		{"Delete removes sets and tolerates missing keys", deleteKeys},
+		{"Keys by prefix", keysByPrefix},
+		{"Sorted scores and ranges", sortedScores},
+		{"Apply with scores", applyScores},
 		{"Apply runs ops in order", applyInOrder},
 		{"Apply with documents and empty ops", applyDocsAndEmpty},
 		{"Apply rejects an invalid op without applying any", applyInvalid},
@@ -88,7 +94,7 @@ func addIdempotent(t *testing.T, s ports.SetStore) {
 	assertCard(t, s, "a", 3)
 }
 
-// Redis rejects SADD with zero members, so an adapter has to guard for this.
+// Redis rejects SADD with no members, so the adapter has to guard it.
 func addNoMembers(t *testing.T, s ports.SetStore) {
 	if err := s.AddToSet("a"); err != nil {
 		t.Fatalf("AddToSet with no members should not error: %v", err)
@@ -105,7 +111,7 @@ func members(t *testing.T, s ports.SetStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertMembers(t, got) // missing key is the empty set, not an error
+	assertMembers(t, got)
 
 	mustAdd(t, s, "a", "1", "2", "2", "3")
 	got, err = s.Members("a")
@@ -115,7 +121,7 @@ func members(t *testing.T, s ports.SetStore) {
 	assertMembers(t, got, "1", "2", "3")
 }
 
-// Ops run in the order given, so Add-then-Remove on one key nets to a removal.
+// Add then Remove on one key nets to a removal; ingest relies on this when moving a document between facets.
 func applyInOrder(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "stale", "1", "2")
 
@@ -134,7 +140,6 @@ func applyInOrder(t *testing.T, s ports.SetStore) {
 	got, _ = s.Members("stale")
 	assertMembers(t, got, "2", "9")
 
-	// Removing the last member empties the set.
 	if err := s.Apply(ports.Remove("fresh", "1", "2")); err != nil {
 		t.Fatal(err)
 	}
@@ -171,16 +176,170 @@ func applyDocsAndEmpty(t *testing.T, s ports.SetStore) {
 	}
 }
 
-// All-or-nothing validation: a bad op anywhere in the batch must mean nothing in the batch is applied.
 func applyInvalid(t *testing.T, s ports.SetStore) {
 	err := s.Apply(
 		ports.Add("x", "1"),
-		ports.Op{}, // zero value: no kind
+		ports.Op{},
 	)
 	if err == nil {
 		t.Fatal("expected an error for an invalid op")
 	}
 	assertCard(t, s, "x", 0)
+}
+
+func intersectStore(t *testing.T, s ports.SetStore) {
+	mustAdd(t, s, "a", "1", "2", "3")
+	mustAdd(t, s, "b", "2", "3", "4")
+
+	if err := s.IntersectStore("dst", "a", "b"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Members("dst")
+	assertMembers(t, got, "2", "3")
+
+	if err := s.IntersectStore("dst", "a", "ghost"); err != nil {
+		t.Fatal(err)
+	}
+	assertCard(t, s, "dst", 0)
+
+	if err := s.IntersectStore("dst"); err == nil {
+		t.Fatal("expected an error for zero keys")
+	}
+}
+
+func intersectCard(t *testing.T, s ports.SetStore) {
+	mustAdd(t, s, "a", "1", "2", "3")
+	mustAdd(t, s, "b", "2", "3", "4")
+
+	for _, tc := range []struct {
+		keys []string
+		want int
+	}{
+		{[]string{"a", "b"}, 2},
+		{[]string{"a"}, 3},
+		{[]string{"a", "ghost"}, 0},
+	} {
+		n, err := s.IntersectCard(tc.keys...)
+		if err != nil || n != tc.want {
+			t.Fatalf("IntersectCard(%v) = %d, %v; want %d", tc.keys, n, err, tc.want)
+		}
+	}
+	if _, err := s.IntersectCard(); err == nil {
+		t.Fatal("expected an error for zero keys")
+	}
+}
+
+func keysByPrefix(t *testing.T, s ports.SetStore) {
+	mustAdd(t, s, "p:role:admin", "1")
+	mustAdd(t, s, "p:role:student", "2")
+	mustAdd(t, s, "p:city:x", "1")
+	mustAdd(t, s, "x*y:1", "1")
+	mustAdd(t, s, "xzzy:1", "1")
+	if err := s.Apply(ports.SetScore("p:_range:age", "1", 30)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutDocument("p", "role:admin", []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Keys("p:role:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMembers(t, got, "p:role:admin", "p:role:student")
+
+	got, _ = s.Keys("p:")
+	assertMembers(t, got, "p:role:admin", "p:role:student", "p:city:x", "p:_range:age")
+
+	// Glob characters in the prefix are literal.
+	got, _ = s.Keys("x*y:")
+	assertMembers(t, got, "x*y:1")
+
+	got, _ = s.Keys("nothing:")
+	assertMembers(t, got)
+}
+
+func sortedScores(t *testing.T, s ports.SetStore) {
+	err := s.Apply(
+		ports.SetScore("age", "a", 30),
+		ports.SetScore("age", "b", 20),
+		ports.SetScore("age", "c", 20),
+		ports.SetScore("age", "d", 45.5),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ordered := func(min, max float64) []string {
+		t.Helper()
+		got, err := s.RangeByScore("age", min, max)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	if got := ordered(math.Inf(-1), math.Inf(1)); !reflect.DeepEqual(got, []string{"b", "c", "a", "d"}) {
+		t.Fatalf("full range = %v, want ascending by score then member", got)
+	}
+	if got := ordered(20, 30); !reflect.DeepEqual(got, []string{"b", "c", "a"}) {
+		t.Fatalf("[20,30] = %v (bounds are inclusive)", got)
+	}
+	if got := ordered(31, math.Inf(1)); !reflect.DeepEqual(got, []string{"d"}) {
+		t.Fatalf("[31,inf) = %v", got)
+	}
+	if got := ordered(100, 200); len(got) != 0 {
+		t.Fatalf("empty range = %v", got)
+	}
+	if got, _ := s.RangeByScore("ghost", math.Inf(-1), math.Inf(1)); len(got) != 0 {
+		t.Fatalf("missing key = %v", got)
+	}
+
+	scores, err := s.Scores("age", "a", "d", "nobody")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(scores, map[string]float64{"a": 30, "d": 45.5}) {
+		t.Fatalf("Scores = %v", scores)
+	}
+	if got, err := s.Scores("age"); err != nil || len(got) != 0 {
+		t.Fatalf("Scores with no members = %v, %v", got, err)
+	}
+
+	// Setting again replaces the score.
+	if err := s.Apply(ports.SetScore("age", "a", 5)); err != nil {
+		t.Fatal(err)
+	}
+	if got := ordered(math.Inf(-1), 10); !reflect.DeepEqual(got, []string{"a"}) {
+		t.Fatalf("after rescoring = %v", got)
+	}
+
+	if err := s.Apply(ports.DelScore("age", "a"), ports.DelScore("age", "never")); err != nil {
+		t.Fatal(err)
+	}
+	if got := ordered(math.Inf(-1), math.Inf(1)); !reflect.DeepEqual(got, []string{"b", "c", "d"}) {
+		t.Fatalf("after DelScore = %v", got)
+	}
+
+	if err := s.Delete("age"); err != nil {
+		t.Fatal(err)
+	}
+	if got := ordered(math.Inf(-1), math.Inf(1)); len(got) != 0 {
+		t.Fatalf("after Delete = %v", got)
+	}
+}
+
+func applyScores(t *testing.T, s ports.SetStore) {
+	err := s.Apply(
+		ports.SetScore("z", "1", 1),
+		ports.Op{Kind: ports.OpSetScore, Key: "z"},
+	)
+	if err == nil {
+		t.Fatal("expected an error for a score op without a member")
+	}
+	if got, _ := s.RangeByScore("z", math.Inf(-1), math.Inf(1)); len(got) != 0 {
+		t.Fatalf("nothing should have been applied, got %v", got)
+	}
 }
 
 func intersect(t *testing.T, s ports.SetStore) {
@@ -200,7 +359,6 @@ func intersect(t *testing.T, s ports.SetStore) {
 	}
 	assertMembers(t, got, "3")
 
-	// A single key is just that set.
 	got, err = s.Intersect("a")
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +369,6 @@ func intersect(t *testing.T, s ports.SetStore) {
 func intersectMissing(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1", "2")
 
-	// Missing key in either position behaves as the empty set.
 	got, err := s.Intersect("a", "ghost")
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +432,6 @@ func difference(t *testing.T, s ports.SetStore) {
 	}
 	assertMembers(t, got, "2")
 
-	// Difference is not commutative.
 	got, err = s.Difference("bs", "universe")
 	if err != nil {
 		t.Fatal(err)
@@ -298,15 +454,13 @@ func unionStore(t *testing.T, s ports.SetStore) {
 	}
 	assertCard(t, s, "dst", 3)
 
-	// Overwrite, not append. This is the exact property whose absence caused
-	// the stale tmp:query:1 leak in search.Find.
+	// dst is replaced, not appended to.
 	if err := s.UnionStore("dst", "a"); err != nil {
 		t.Fatal(err)
 	}
 	assertCard(t, s, "dst", 2)
 
-	// Union of nothing leaves dst empty (Redis deletes the key; mem keeps an
-	// empty set; both read as cardinality 0).
+	// Redis deletes an emptied key, mem keeps an empty set; both read as 0.
 	if err := s.UnionStore("dst", "ghost"); err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +475,7 @@ func deleteKeys(t *testing.T, s ports.SetStore) {
 		t.Fatalf("Delete should tolerate missing keys: %v", err)
 	}
 	assertCard(t, s, "a", 0)
-	assertCard(t, s, "b", 1) // untouched
+	assertCard(t, s, "b", 1)
 
 	if err := s.Delete(); err != nil {
 		t.Fatalf("Delete with no keys should be a no-op: %v", err)
@@ -341,7 +495,6 @@ func docRoundTrip(t *testing.T, s ports.SetStore) {
 		t.Fatalf("got %s, want %s", got, want)
 	}
 
-	// Put again replaces.
 	if err := s.PutDocument("plan", "1", []byte(`{"v":2}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +518,6 @@ func docMissingAndIsolation(t *testing.T, s ports.SetStore) {
 	}
 }
 
-// The reason the project exists: the port should obey the laws of set theory.
 func setLaws(t *testing.T, s ports.SetStore) {
 	mustAdd(t, s, "a", "1", "2", "3", "4")
 	mustAdd(t, s, "b", "3", "4", "5")
@@ -375,16 +527,16 @@ func setLaws(t *testing.T, s ports.SetStore) {
 	aMinusB, _ := s.Difference("a", "b")
 	bMinusA, _ := s.Difference("b", "a")
 
-	// Inclusion-exclusion: |A ∪ B| = |A| + |B| − |A ∩ B|
+	// |A ∪ B| = |A| + |B| − |A ∩ B|
 	if len(u) != 4+3-len(i) {
 		t.Fatalf("inclusion-exclusion violated: |∪|=%d |∩|=%d", len(u), len(i))
 	}
-	// A ∪ B = (A \ B) ∪ (A ∩ B) ∪ (B \ A), and the three parts are disjoint.
+	// A ∪ B splits into A\B, A ∩ B and B\A with no overlap.
 	if len(aMinusB)+len(i)+len(bMinusA) != len(u) {
 		t.Fatalf("partition of A∪B violated: %d + %d + %d != %d",
 			len(aMinusB), len(i), len(bMinusA), len(u))
 	}
-	// Jaccard = |A ∩ B| / |A ∪ B| (used later by similarity).
+	// Jaccard = |A ∩ B| / |A ∪ B|
 	if got, want := float64(len(i))/float64(len(u)), 0.4; got != want {
 		t.Fatalf("jaccard = %v, want %v", got, want)
 	}

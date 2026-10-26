@@ -2,6 +2,8 @@ package mem
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/joalen/lattice/internal/ports"
@@ -11,16 +13,18 @@ import (
 // plain Go maps. No need for network, persistence, this exists purely to let
 // search/ingest/facets logic be developed and tested without Redis ever running.
 type Store struct {
-	mu   sync.RWMutex
-	sets map[string]map[string]struct{} // setKey = set of members
-	docs map[string][]byte              // "entity:id" = raw document bytes
+	mu    sync.RWMutex
+	sets  map[string]map[string]struct{} // setKey = set of members
+	zsets map[string]map[string]float64  // key = member -> score
+	docs  map[string][]byte              // "entity:id" = raw document bytes
 }
 
 // New returns a ready-to-use empty Store
 func New() *Store {
 	return &Store{
-		sets: make(map[string]map[string]struct{}),
-		docs: make(map[string][]byte),
+		sets:  make(map[string]map[string]struct{}),
+		zsets: make(map[string]map[string]float64),
+		docs:  make(map[string][]byte),
 	}
 }
 
@@ -35,7 +39,6 @@ func (s *Store) AddToSet(setKey string, members ...string) error {
 	return nil
 }
 
-// Members returns every element of a set (SMEMBERS). A missing key is just the empty set.
 func (s *Store) Members(setKey string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -105,7 +108,6 @@ func (s *Store) Difference(setKeys ...string) ([]string, error) {
 	return keys(result), nil
 }
 
-// UnionStore materializes the union of setKeys into dest, replacing whatever dest held (SUNIONSTORE)
 func (s *Store) UnionStore(dest string, setKeys ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,21 +122,91 @@ func (s *Store) UnionStore(dest string, setKeys ...string) error {
 	return nil
 }
 
-// Delete removes whole sets; missing keys are ignored (DEL)
+func (s *Store) IntersectStore(dest string, setKeys ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(setKeys) == 0 {
+		return fmt.Errorf("intersect: no set keys given")
+	}
+	s.sets[dest] = s.intersectLocked(setKeys)
+	return nil
+}
+
+func (s *Store) IntersectCard(setKeys ...string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(setKeys) == 0 {
+		return 0, fmt.Errorf("intersect: no set keys given")
+	}
+	return len(s.intersectLocked(setKeys)), nil
+}
+
 func (s *Store) Delete(keys ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, k := range keys {
 		delete(s.sets, k)
+		delete(s.zsets, k)
 	}
 	return nil
 }
 
-// Apply runs ops in order under a single lock, so no reader ever sees a
-// half-applied batch. Validating everything up front means an invalid op
-// rejects the whole batch before anything is touched, the same all-or-nothing
-// behavior MULTI/EXEC gives the Redis adapter.
+func (s *Store) Keys(prefix string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []string
+	for k := range s.sets {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, k)
+		}
+	}
+	for k := range s.zsets {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (s *Store) RangeByScore(key string, min, max float64) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []string
+	for m, score := range s.zsets[key] {
+		if score >= min && score <= max {
+			out = append(out, m)
+		}
+	}
+	z := s.zsets[key]
+	sort.Slice(out, func(i, j int) bool {
+		if z[out[i]] != z[out[j]] {
+			return z[out[i]] < z[out[j]]
+		}
+		return out[i] < out[j]
+	})
+	return out, nil
+}
+
+func (s *Store) Scores(key string, members ...string) (map[string]float64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[string]float64, len(members))
+	for _, m := range members {
+		if score, ok := s.zsets[key][m]; ok {
+			out[m] = score
+		}
+	}
+	return out, nil
+}
+
+// Apply validates every op first, then applies them under one lock, so a bad op leaves the store untouched.
 func (s *Store) Apply(ops ...ports.Op) error {
 	for _, op := range ops {
 		if err := op.Validate(); err != nil {
@@ -153,10 +225,21 @@ func (s *Store) Apply(ops ...ports.Op) error {
 			s.removeLocked(op.Key, op.Members)
 		case ports.OpDelete:
 			delete(s.sets, op.Key)
+			delete(s.zsets, op.Key)
 		case ports.OpPutDoc:
 			s.docs[op.Entity+":"+op.ID] = append([]byte(nil), op.Raw...)
 		case ports.OpDelDoc:
 			delete(s.docs, op.Entity+":"+op.ID)
+		case ports.OpSetScore:
+			if s.zsets[op.Key] == nil {
+				s.zsets[op.Key] = make(map[string]float64)
+			}
+			s.zsets[op.Key][op.Member] = op.Score
+		case ports.OpDelScore:
+			delete(s.zsets[op.Key], op.Member)
+			if len(s.zsets[op.Key]) == 0 {
+				delete(s.zsets, op.Key)
+			}
 		}
 	}
 	return nil
@@ -166,7 +249,7 @@ func (s *Store) PutDocument(entity, id string, raw []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.docs[entity+":"+id] = append([]byte(nil), raw...) // copy: don't alias the caller's slice
+	s.docs[entity+":"+id] = append([]byte(nil), raw...)
 	return nil
 }
 
@@ -182,7 +265,7 @@ func (s *Store) GetDocument(entity, id string) ([]byte, error) {
 	return append([]byte(nil), raw...), nil
 }
 
-// addLocked and removeLocked assume the caller already holds s.mu.
+// addLocked, removeLocked and intersectLocked assume the caller holds s.mu.
 func (s *Store) addLocked(setKey string, members []string) {
 	if s.sets[setKey] == nil {
 		s.sets[setKey] = make(map[string]struct{})
@@ -199,8 +282,20 @@ func (s *Store) removeLocked(setKey string, members []string) {
 		delete(set, m)
 	}
 	if len(set) == 0 {
-		delete(s.sets, setKey) // Redis drops a set when it empties; behave the same
+		delete(s.sets, setKey) // Redis drops a set when it empties
 	}
+}
+
+func (s *Store) intersectLocked(setKeys []string) map[string]struct{} {
+	result := s.copySet(setKeys[0])
+	for _, key := range setKeys[1:] {
+		for member := range result {
+			if _, ok := s.sets[key][member]; !ok {
+				delete(result, member)
+			}
+		}
+	}
+	return result
 }
 
 func (s *Store) copySet(setKey string) map[string]struct{} {

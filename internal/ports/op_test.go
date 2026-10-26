@@ -1,6 +1,7 @@
 package ports_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/joalen/lattice/internal/ports"
@@ -9,11 +10,13 @@ import (
 func TestOp_Validate(t *testing.T) {
 	good := []ports.Op{
 		ports.Add("k", "a"),
-		ports.Add("k"), // empty member list is legal (a no-op)
+		ports.Add("k"),
 		ports.Remove("k", "a"),
 		ports.DeleteKey("k"),
 		ports.PutDoc("plan", "1", []byte("{}")),
 		ports.DelDoc("plan", "1"),
+		ports.SetScore("k", "m", 1.5),
+		ports.DelScore("k", "m"),
 	}
 	for i, op := range good {
 		if err := op.Validate(); err != nil {
@@ -22,11 +25,14 @@ func TestOp_Validate(t *testing.T) {
 	}
 
 	bad := []ports.Op{
-		{},                         // zero value: no kind
-		{Kind: 99},                 // unknown kind
-		ports.Add("", "a"),         // missing key
-		ports.PutDoc("", "1", nil), // missing entity
-		ports.DelDoc("plan", ""),   // missing id
+		{},
+		{Kind: 99},
+		ports.Add("", "a"),
+		ports.PutDoc("", "1", nil),
+		ports.DelDoc("plan", ""),
+		ports.SetScore("k", "", 1),
+		ports.SetScore("k", "m", math.NaN()),
+		ports.DelScore("", "m"),
 	}
 	for i, op := range bad {
 		if err := op.Validate(); err == nil {
