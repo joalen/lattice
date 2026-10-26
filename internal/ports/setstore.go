@@ -7,6 +7,7 @@ var ErrNotFound = errors.New("not found")
 type SetStore interface {
 	AddToSet(setKey string, members ...string) error
 	Members(setKey string) ([]string, error)
+	// MembersMulti fetches several sets in one round trip; missing keys map to an empty slice.
 	MembersMulti(setKeys ...string) (map[string][]string, error)
 	Intersect(setKeys ...string) ([]string, error)
 	Union(setKeys ...string) ([]string, error)
@@ -17,6 +18,8 @@ type SetStore interface {
 	UnionStore(dest string, setKeys ...string) error
 	IntersectStore(dest string, setKeys ...string) error
 	IntersectCard(setKeys ...string) (int, error)
+	// IntersectCards returns |base ∩ key| for each key in order, batching round trips.
+	IntersectCards(base string, keys ...string) ([]int, error)
 	Delete(keys ...string) error
 
 	// Keys lists set and sorted-set keys that start with prefix.

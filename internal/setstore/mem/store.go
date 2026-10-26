@@ -154,6 +154,21 @@ func (s *Store) IntersectCard(setKeys ...string) (int, error) {
 	return len(s.intersectLocked(setKeys)), nil
 }
 
+func (s *Store) IntersectCards(base string, setKeys ...string) ([]int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]int, len(setKeys))
+	for i, k := range setKeys {
+		for m := range s.sets[base] {
+			if _, ok := s.sets[k][m]; ok {
+				out[i]++
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) Delete(keys ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

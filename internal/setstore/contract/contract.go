@@ -39,6 +39,7 @@ func Run(t *testing.T, newStore Factory) {
 		{"UnionStore materializes and overwrites", unionStore},
 		{"IntersectStore materializes and overwrites", intersectStore},
 		{"IntersectCard", intersectCard},
+		{"IntersectCards", intersectCards},
 		{"Delete removes sets and tolerates missing keys", deleteKeys},
 		{"Keys by prefix", keysByPrefix},
 		{"Sorted scores and ranges", sortedScores},
@@ -169,6 +170,19 @@ func largeBatches(t *testing.T, s ports.SetStore) {
 		}
 	}
 
+	if err := s.AddToSet("all", members...); err != nil {
+		t.Fatal(err)
+	}
+	cards, err := s.IntersectCards("all", setKeys...)
+	if err != nil || len(cards) != n {
+		t.Fatalf("IntersectCards: %d results, %v", len(cards), err)
+	}
+	for i, c := range cards {
+		if c != 1 {
+			t.Fatalf("IntersectCards[%d] = %d, want 1", i, c)
+		}
+	}
+
 	scores, err := s.Scores("z", append(members, "nobody")...)
 	if err != nil {
 		t.Fatal(err)
@@ -282,6 +296,26 @@ func intersectCard(t *testing.T, s ports.SetStore) {
 	}
 	if _, err := s.IntersectCard(); err == nil {
 		t.Fatal("expected an error for zero keys")
+	}
+}
+
+func intersectCards(t *testing.T, s ports.SetStore) {
+	mustAdd(t, s, "base", "1", "2", "3", "4")
+	mustAdd(t, s, "a", "1", "2", "9")
+	mustAdd(t, s, "b", "4")
+
+	got, err := s.IntersectCards("base", "a", "b", "ghost", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []int{2, 1, 0, 4}) {
+		t.Fatalf("got %v, want [2 1 0 4]", got)
+	}
+	if got, err := s.IntersectCards("base"); err != nil || len(got) != 0 {
+		t.Fatalf("no keys: %v, %v", got, err)
+	}
+	if got, _ := s.IntersectCards("ghost", "a"); !reflect.DeepEqual(got, []int{0}) {
+		t.Fatalf("missing base: %v", got)
 	}
 }
 

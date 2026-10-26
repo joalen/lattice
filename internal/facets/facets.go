@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/joalen/lattice/internal/keyspace"
 	"github.com/joalen/lattice/internal/ports"
@@ -19,10 +18,33 @@ type Count struct {
 
 // Counts reports, for each path, the values present among ids and how many of
 // ids carry each. Values with a zero count are omitted; results are ordered by
-// count descending, then value.
+// count descending, then value. Round trips stay constant however many values
+// a field has.
 func Counts(store ports.SetStore, entity string, paths []string, ids []string) (map[string][]Count, error) {
 	out := make(map[string][]Count, len(paths))
-	if len(ids) == 0 {
+	if len(ids) == 0 || len(paths) == 0 {
+		return out, nil
+	}
+
+	valueSets := make([]string, len(paths))
+	for i, p := range paths {
+		valueSets[i] = keyspace.Values(entity, p)
+	}
+	known, err := store.MembersMulti(valueSets...)
+	if err != nil {
+		return nil, fmt.Errorf("facets: %w", err)
+	}
+
+	type candidate struct{ path, value string }
+	var cands []candidate
+	var keys []string
+	for i, p := range paths {
+		for _, v := range known[valueSets[i]] {
+			cands = append(cands, candidate{p, v})
+			keys = append(keys, keyspace.Facet(entity, p, v))
+		}
+	}
+	if len(keys) == 0 {
 		return out, nil
 	}
 
@@ -31,33 +53,23 @@ func Counts(store ports.SetStore, entity string, paths []string, ids []string) (
 	if err := store.AddToSet(current, ids...); err != nil {
 		return nil, fmt.Errorf("facets: %w", err)
 	}
+	cards, err := store.IntersectCards(current, keys...)
+	if err != nil {
+		return nil, fmt.Errorf("facets: %w", err)
+	}
 
-	for _, path := range paths {
-		prefix := keyspace.FacetPrefix(entity, path)
-		keys, err := store.Keys(prefix)
-		if err != nil {
-			return nil, fmt.Errorf("facets: %q: %w", path, err)
+	for i, c := range cands {
+		if cards[i] > 0 {
+			out[c.path] = append(out[c.path], Count{Value: c.value, N: cards[i]})
 		}
-
-		var counts []Count
-		for _, key := range keys {
-			n, err := store.IntersectCard(current, key)
-			if err != nil {
-				return nil, fmt.Errorf("facets: %q: %w", key, err)
-			}
-			if n > 0 {
-				counts = append(counts, Count{Value: strings.TrimPrefix(key, prefix), N: n})
-			}
-		}
+	}
+	for _, counts := range out {
 		sort.Slice(counts, func(i, j int) bool {
 			if counts[i].N != counts[j].N {
 				return counts[i].N > counts[j].N
 			}
 			return counts[i].Value < counts[j].Value
 		})
-		if len(counts) > 0 {
-			out[path] = counts
-		}
 	}
 	return out, nil
 }

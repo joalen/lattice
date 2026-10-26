@@ -321,3 +321,21 @@ func TestIngest_PersistsMapping(t *testing.T) {
 		t.Errorf("loaded %+v, want %+v", got, want)
 	}
 }
+
+func TestIngest_RegistersFacetValues(t *testing.T) {
+	store := mem.New()
+	docs := mustDocs(t, users)
+	if _, err := newBuilder(t, store, docs).Ingest(docs, ingest.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	for path, want := range map[string][]string{
+		"role":         {"admin", "student", "teacher"},
+		"tags":         {"go", "redis", "sql"},
+		"address.city": {"gwenborough", "mckenziehaven", "wisokyburgh"},
+	} {
+		if got := members(t, store, keyspace.Values("user", path)); !reflect.DeepEqual(got, want) {
+			t.Errorf("values for %s = %v, want %v", path, got, want)
+		}
+	}
+}

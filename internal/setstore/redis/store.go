@@ -150,6 +150,27 @@ func (s *Store) IntersectCard(setKeys ...string) (int, error) {
 	return int(n), nil
 }
 
+func (s *Store) IntersectCards(base string, setKeys ...string) ([]int, error) {
+	out := make([]int, len(setKeys))
+	ctx := s.ctx()
+
+	for start := 0; start < len(setKeys); start += pipelineChunk {
+		batch := setKeys[start:min(start+pipelineChunk, len(setKeys))]
+		pipe := s.rdb.Pipeline()
+		cmds := make([]*goredis.IntCmd, len(batch))
+		for i, k := range batch {
+			cmds[i] = pipe.SInterCard(ctx, 0, s.k(base), s.k(k))
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return nil, fmt.Errorf("redis: SINTERCARD batch: %w", err)
+		}
+		for i, c := range cmds {
+			out[start+i] = int(c.Val())
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) Keys(prefix string) ([]string, error) {
 	ctx := s.ctx()
 	pattern := globEscape(s.prefix+prefix) + "*"

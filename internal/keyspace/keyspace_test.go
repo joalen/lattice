@@ -35,6 +35,9 @@ func TestKeys(t *testing.T) {
 		t.Error("Memberships")
 	}
 
+	if keyspace.Values("plan", "major") != "plan:_values:major" {
+		t.Error("Values")
+	}
 	if keyspace.Range("plan", "credits") != "plan:_range:credits" {
 		t.Error("Range")
 	}
@@ -45,7 +48,7 @@ func TestKeys(t *testing.T) {
 
 func TestIsFacet(t *testing.T) {
 	yes := []string{"plan:major:cs", "plan:address.city:x"}
-	no := []string{"plan:universe", "plan:_range:credits", "plan:_memberships:1", "plan:_tmp:abc", "other:major:cs"}
+	no := []string{"plan:universe", "plan:_range:credits", "plan:_memberships:1", "plan:_tmp:abc", "plan:_values:major", "other:major:cs"}
 	for _, k := range yes {
 		if !keyspace.IsFacet("plan", k) {
 			t.Errorf("IsFacet(%q) = false", k)

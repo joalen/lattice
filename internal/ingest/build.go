@@ -53,11 +53,14 @@ func NewBuilder(store ports.SetStore, m Mapping) (*Builder, error) {
 	return b, nil
 }
 
+type facetRef struct{ path, value string }
+
 type prepared struct {
 	id     string
 	raw    []byte
 	keys   []string
 	scores map[string]float64
+	facets map[string]facetRef
 }
 
 // Ingest validates every document before writing any, then writes each as an atomic batch.
@@ -80,11 +83,11 @@ func (b *Builder) Ingest(docs []json.RawMessage, opts Options) (Report, error) {
 			return rep, fmt.Errorf("ingest: duplicate id %q (documents %d and %d)", id, first, i)
 		}
 		seen[id] = i
-		keys, scores, err := b.keysFor(flat)
+		keys, scores, refs, err := b.keysFor(flat)
 		if err != nil {
 			return rep, fmt.Errorf("ingest: document %d: %w", i, err)
 		}
-		items = append(items, prepared{id: id, raw: raw, keys: keys, scores: scores})
+		items = append(items, prepared{id: id, raw: raw, keys: keys, scores: scores, facets: refs})
 	}
 
 	if err := SaveMapping(b.store, b.m); err != nil {
@@ -117,14 +120,17 @@ func (b *Builder) idOf(flat map[string]Field) (string, error) {
 	return id, nil
 }
 
-func (b *Builder) keysFor(flat map[string]Field) ([]string, map[string]float64, error) {
+func (b *Builder) keysFor(flat map[string]Field) ([]string, map[string]float64, map[string]facetRef, error) {
 	set := map[string]struct{}{keyspace.Universe(b.m.Entity): {}}
+	refs := make(map[string]facetRef)
 	for _, path := range b.setPaths {
 		for _, v := range flat[path].Values {
 			if keyspace.Normalize(v.Text) == "" {
 				continue
 			}
-			set[keyspace.Facet(b.m.Entity, path, v.Text)] = struct{}{}
+			key := keyspace.Facet(b.m.Entity, path, v.Text)
+			set[key] = struct{}{}
+			refs[key] = facetRef{path: path, value: keyspace.Normalize(v.Text)}
 		}
 	}
 
@@ -135,11 +141,11 @@ func (b *Builder) keysFor(flat map[string]Field) ([]string, map[string]float64, 
 			continue
 		}
 		if f.Array || len(f.Values) != 1 || f.Values[0].Kind != KindNumber {
-			return nil, nil, fmt.Errorf("range field %q must hold a single number", path)
+			return nil, nil, nil, fmt.Errorf("range field %q must hold a single number", path)
 		}
 		score, err := strconv.ParseFloat(f.Values[0].Text, 64)
 		if err != nil {
-			return nil, nil, fmt.Errorf("range field %q: %w", path, err)
+			return nil, nil, nil, fmt.Errorf("range field %q: %w", path, err)
 		}
 		key := keyspace.Range(b.m.Entity, path)
 		if scores == nil {
@@ -148,7 +154,7 @@ func (b *Builder) keysFor(flat map[string]Field) ([]string, map[string]float64, 
 		scores[key] = score
 		set[key] = struct{}{}
 	}
-	return sortedKeys(set), scores, nil
+	return sortedKeys(set), scores, refs, nil
 }
 
 func (b *Builder) write(it prepared, rep *Report) error {
@@ -184,6 +190,9 @@ func (b *Builder) write(it prepared, rep *Report) error {
 	for _, k := range added {
 		if !keyspace.IsRange(entity, k) {
 			ops = append(ops, ports.Add(k, it.id))
+		}
+		if ref, ok := it.facets[k]; ok {
+			ops = append(ops, ports.Add(keyspace.Values(entity, ref.path), ref.value))
 		}
 	}
 	for _, k := range it.keys {
